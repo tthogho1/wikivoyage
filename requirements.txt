@@ -1,0 +1,10 @@
+# pinned dependencies (installed in .venv)
+requests==2.34.2
+
+# optional: nicer wikitext parsing for the preprocessor
+mwparserfromhell>=0.6.6
+
+# embedding + Zilliz Cloud
+pymilvus[model]>=2.4.0
+torch>=2.0
+python-dotenv>=1.0

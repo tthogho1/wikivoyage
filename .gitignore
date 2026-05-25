@@ -1,0 +1,15 @@
+.venv
+__pycache__/
+*.pyc
+.env
+
+# Generated data
+pages/
+
+# Stray pip output files
+=*
+
+# Virtual environment
+.venv/
+__pycache__/
+*.pyc

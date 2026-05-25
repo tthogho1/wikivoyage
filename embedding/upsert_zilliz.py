@@ -150,11 +150,24 @@ def _embed_batch(
     ef: BGEM3EmbeddingFunction,
     texts: list[str],
 ) -> tuple[list[list[float]], list[dict[int, float]]]:
-    """Return (dense_list, sparse_list) for a batch of texts."""
+    """Return (dense_list, sparse_list) for a batch of texts.
+
+    BGEM3EmbeddingFunction may return sparse values as scipy csr_matrix objects.
+    We normalise them to plain {int: float} dicts that Milvus accepts.
+    """
     output = ef(texts)
-    dense: list[list[float]] = output["dense"]
-    # sparse values are returned as list of {int: float} dicts
-    sparse: list[dict[int, float]] = output["sparse"]
+    dense: list[list[float]] = [list(map(float, v)) for v in output["dense"]]
+
+    sparse: list[dict[int, float]] = []
+    for s in output["sparse"]:
+        # scipy sparse matrix (1 x vocab)
+        try:
+            cx = s.tocoo()
+            sparse.append({int(j): float(v) for j, v in zip(cx.col, cx.data)})
+        except AttributeError:
+            # already a dict-like object
+            sparse.append({int(k): float(v) for k, v in s.items()})
+
     return dense, sparse
 
 

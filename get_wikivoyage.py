@@ -343,7 +343,7 @@ def main() -> None:
     )
 
     source = os.environ.get("WIKIVOYAGE_DUMP", DUMP_URL)
-    limit = int(os.environ.get("WIKIVOYAGE_LIMIT", "10"))
+    limit = int(os.environ.get("WIKIVOYAGE_LIMIT", "200"))
     outdir = os.environ.get("WIKIVOYAGE_OUTDIR", "pages")
     types_env = os.environ.get("WIKIVOYAGE_PAGE_TYPES", "city").strip()
     allowed_types: Optional[set[str]] = (

@@ -1,3 +1,54 @@
+# Wikivoyage — RAG chatbot
+
+This repository contains a pipeline that converts Wikivoyage pages into JSONL, chunks and embeds them with BGE‑M3 (dense + sparse), upserts to a Milvus/Zilliz collection, and exposes a small FastAPI RAG chatbot with a minimal web UI.
+
+Quick start
+1. Activate the virtualenv and install dependencies:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Create a `.env` file at the project root by copying `.env.example` and filling credentials:
+
+```bash
+cp .env.example .env
+# Edit .env and set ZILLIZ_URI, ZILLIZ_TOKEN, OPENAI_API_KEY
+```
+
+3. If you haven't upserted embeddings yet, run the upsert orchestrator (from repo root):
+
+```bash
+python -m embedding.upsert_zilliz
+```
+
+4. Start the FastAPI chatbot server (from repo root):
+
+```bash
+uvicorn chatbot.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+5. Open the web UI in your browser:
+
+  http://127.0.0.1:8000/
+
+Health and example curl
+
+```bash
+curl http://127.0.0.1:8000/health
+
+curl -X POST http://127.0.0.1:8000/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Where should I stay in Paris?","top_k":5}'
+```
+
+Notes
+- The web UI is served from `chatbot/static/` and the endpoint `/` returns `index.html`.
+- Ensure `.env` contains valid Zilliz credentials; otherwise the retriever will fail on startup.
+- If you want token-based chunking, install `langchain` and `tiktoken` (requirements currently reference them as optional).
+
+If you'd like, I can also: add README sections for embedding tuning, add a Docker dev container, or add smoke tests for chunking/embed normalization.
 # Wikivoyage RAG Pipeline
 
 A pipeline that extracts city information from Wikivoyage XML dumps, generates dense + sparse vectors using BGE-M3, and upserts them into Zilliz Cloud for hybrid vector search.

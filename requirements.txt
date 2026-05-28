@@ -13,3 +13,8 @@ python-dotenv>=1.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
 openai>=1.0
+langchain>=0.0.300
+tiktoken>=0.4
+
+ # AWS S3
+boto3>=1.28

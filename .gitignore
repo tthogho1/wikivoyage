@@ -6,6 +6,9 @@ __pycache__/
 # Generated data
 pages/
 
+# Deployment docs (should not be committed)
+infra/DEPLOYMENT.md
+
 # Stray pip output files
 =*
 

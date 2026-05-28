@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Full CloudFormation stack for running the `wikivoyage` processor on AWS Batch
+  (Fargate). Creates ECR repository, IAM roles, Batch compute environment
+  (FARGATE), JobQueue and JobDefinition. Some placeholders/parameters must be
+  supplied at deploy time (subnets, security groups, image tag, bucket).
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: wikivoyage
+    Description: ECR repository name to create/use
+
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Tag to use for the image when referencing the ECR repo
+
+  S3Bucket:
+    Type: String
+    Default: ""
+    Description: (Optional) S3 bucket name to allow writes. Leave empty to skip S3 permissions.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least one private subnet id for Batch/Fargate tasks
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group(s) for the Fargate ENIs
+
+Resources:
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      ImageScanningConfiguration:
+        scanOnPush: true
+
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - batch.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+
+  BatchECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+
+  WikivoyageTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: WikivoyageS3Write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:ListBucket
+                Resource: !If
+                  - HasBucket
+                  - - !Sub arn:aws:s3:::${S3Bucket}
+                    - !Sub arn:aws:s3:::${S3Bucket}/*
+                  - !Ref AWS::NoValue
+
+  BatchComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ComputeEnvironmentName: wikivoyage-ce
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeResources:
+        Type: FARGATE
+        MinvCpus: 0
+        MaxvCpus: 128
+        Subnets: !Ref SubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+
+  BatchJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: wikivoyage-queue
+      State: ENABLED
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref BatchComputeEnvironment
+
+  BatchJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: wikivoyage-batch-fargate
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      ContainerProperties:
+        Image: !Join [":", [!GetAtt ECRRepository.RepositoryUri, !Ref ImageTag]]
+        Vcpus: 1
+        Memory: 2048
+        Command:
+          - python
+          - get_wikivoyage.py
+        ExecutionRoleArn: !GetAtt BatchECSExecutionRole.Arn
+        JobRoleArn: !GetAtt WikivoyageTaskRole.Arn
+        Environment:
+          - Name: WIKIVOYAGE_OUTDIR
+            Value: pages
+          - Name: WIKIVOYAGE_S3_BUCKET
+            Value: !Ref S3Bucket
+
+Conditions:
+  HasBucket: !Not [!Equals [!Ref S3Bucket, ""]]
+
+Outputs:
+  ECRRepositoryUri:
+    Description: ECR repository URI
+    Value: !GetAtt ECRRepository.RepositoryUri
+
+  JobDefinitionName:
+    Description: Batch JobDefinition name
+    Value: !Ref BatchJobDefinition
+
+  JobQueueName:
+    Description: Batch JobQueue name
+    Value: !Ref BatchJobQueue

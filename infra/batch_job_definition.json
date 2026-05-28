@@ -1,0 +1,19 @@
+{
+  "jobDefinitionName": "wikivoyage-batch-fargate",
+  "type": "container",
+  "platformCapabilities": ["FARGATE"],
+  "containerProperties": {
+    "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wikivoyage:latest",
+    "resourceRequirements": [
+      { "type": "VCPU", "value": "1" },
+      { "type": "MEMORY", "value": "2048" }
+    ],
+    "command": ["python","get_wikivoyage.py"],
+    "environment": [
+      { "name": "WIKIVOYAGE_OUTDIR", "value": "pages" },
+      { "name": "WIKIVOYAGE_LIMIT", "value": "0" }
+    ],
+    "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/AWSBatchECSRole",
+    "jobRoleArn": "arn:aws:iam::ACCOUNT_ID:role/wikivoyageTaskRole"
+  }
+}

@@ -48,6 +48,10 @@ try:
 except Exception:
     mwparserfromhell = None
 
+try:
+    import boto3
+except Exception:
+    boto3 = None
 
 logger = logging.getLogger("wikivoyage.stream")
 
@@ -275,19 +279,24 @@ def build_retrieval_text(
     return result
 
 
-def _unique_path(outdir: str, stem: str, used: dict[str, int]) -> str:
-    """Return <outdir>/<stem>.jsonl, adding _2, _3 ... if needed (in-run dedup)."""
+def _unique_path(outdir: str, stem: str, used: dict[str, int], s3_mode: bool = False) -> str:
+    """Return <outdir>/<stem>.jsonl, adding _2, _3 ... if needed (in-run dedup).
+
+    When `s3_mode` is True we only perform in-run deduplication and do not
+    check the local filesystem for existing files (S3 checks would be costly).
+    """
     base = stem
     n = used.get(base, 0) + 1
     used[base] = n
     candidate_stem = base if n == 1 else f"{base}_{n}"
     path = os.path.join(outdir, candidate_stem + ".jsonl")
-    # Also avoid colliding with existing files on disk
-    while os.path.exists(path):
-        n += 1
-        used[base] = n
-        candidate_stem = f"{base}_{n}"
-        path = os.path.join(outdir, candidate_stem + ".jsonl")
+    if not s3_mode:
+        # Also avoid colliding with existing files on disk
+        while os.path.exists(path):
+            n += 1
+            used[base] = n
+            candidate_stem = f"{base}_{n}"
+            path = os.path.join(outdir, candidate_stem + ".jsonl")
     return path
 
 
@@ -344,13 +353,33 @@ def main() -> None:
 
     source = os.environ.get("WIKIVOYAGE_DUMP", DUMP_URL)
     limit = int(os.environ.get("WIKIVOYAGE_LIMIT", "200"))
-    outdir = os.environ.get("WIKIVOYAGE_OUTDIR", "pages")
+    outdir_env = os.environ.get("WIKIVOYAGE_OUTDIR", "pages").strip()
     types_env = os.environ.get("WIKIVOYAGE_PAGE_TYPES", "city").strip()
     allowed_types: Optional[set[str]] = (
         None if types_env == "*" else {t.strip() for t in types_env.split(",") if t.strip()}
     )
 
-    os.makedirs(outdir, exist_ok=True)
+    # S3 configuration: if WIKIVOYAGE_S3_BUCKET is set, write to S3.
+    s3_bucket = os.environ.get("WIKIVOYAGE_S3_BUCKET", "").strip()
+    s3_prefix = outdir_env.strip("/")
+    if s3_prefix:
+        s3_prefix = s3_prefix + "/"
+
+    s3_mode = False
+    s3_client = None
+    if s3_bucket:
+        if boto3 is None:
+            raise RuntimeError("boto3 is required to write to S3 (set WIKIVOYAGE_S3_BUCKET)")
+        s3_mode = True
+        s3_client = boto3.client("s3")
+
+    # Local output dir only needed when not using S3
+    if not s3_mode:
+        outdir = outdir_env or "pages"
+        os.makedirs(outdir, exist_ok=True)
+    else:
+        # when using S3, we'll use the prefix (may be empty)
+        outdir = s3_prefix
 
     reader = WikivoyageDumpStreamReader(source)
     used_stems: dict[str, int] = {}
@@ -377,13 +406,21 @@ def main() -> None:
 
         title = page.title or "_unnamed_"
         slug = _safe_filename(title)
-        outpath = _unique_path(outdir, slug, used_stems)
+        outpath = _unique_path(outdir, slug, used_stems, s3_mode=s3_mode)
         # Update slug if path was disambiguated
         final_stem = os.path.splitext(os.path.basename(outpath))[0]
         record = build_record(page, page_type, status, final_stem)
 
-        with open(outpath, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if s3_mode:
+            key = (s3_prefix or "") + os.path.basename(outpath)
+            s3_client.put_object(
+                Bucket=s3_bucket,
+                Key=key,
+                Body=(json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"),
+            )
+        else:
+            with open(outpath, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         written += 1
         logger.info("wrote %s (type=%s)", os.path.basename(outpath), page_type)

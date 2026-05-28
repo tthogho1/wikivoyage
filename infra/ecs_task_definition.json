@@ -1,0 +1,28 @@
+{
+  "family": "wikivoyage-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/wikivoyageTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "wikivoyage",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wikivoyage:latest",
+      "essential": true,
+      "environment": [
+        { "name": "WIKIVOYAGE_OUTDIR", "value": "pages" },
+        { "name": "WIKIVOYAGE_LIMIT", "value": "0" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/wikivoyage",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

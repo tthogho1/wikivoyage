@@ -64,12 +64,18 @@ except ImportError:
 
 logger = logging.getLogger("wikivoyage.embed")
 
+# Ensure project root is on sys.path so `import embedding.*` works when running
+# this script directly (not as a package).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
 DENSE_DIM = 1024                   # BGE-M3 dense output dimension
 MAX_VARCHAR = 65_535               # Milvus VARCHAR limit
 COLLECTION_DESC = "Wikivoyage city pages – BGE-M3 dense + sparse vectors"
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
 
 
 # ---------------------------------------------------------------------------
@@ -206,87 +212,116 @@ def main() -> None:
     if not records:
         sys.exit("[ERROR] No records found. Check WIKIVOYAGE_PAGES_DIR.")
 
-    # --- initialise BGE-M3 ------------------------------------------------
-    logger.info("Loading BGE-M3 model on device=%s fp16=%s …", device, use_fp16)
-    ef = BGEM3EmbeddingFunction(
-        model_name="BAAI/bge-m3",
-        device=device,
-        use_fp16=use_fp16,
-    )
+    # --- initialise components: Chunker, Embedder, Upserter ----------------
+    chunk_method = os.environ.get("CHUNK_METHOD", "recursive")
+    chunk_size = int(os.environ.get("CHUNK_SIZE", str(CHUNK_SIZE)))
+    chunk_overlap = int(os.environ.get("CHUNK_OVERLAP", str(CHUNK_OVERLAP)))
+    embedding_batch = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
 
-    # --- connect to Zilliz ------------------------------------------------
+    logger.info("Initializing components: chunker=%s size=%d overlap=%d embed_batch=%d", chunk_method, chunk_size, chunk_overlap, embedding_batch)
+    try:
+        from embedding.chunker import make_chunker
+        from embedding.embedder import make_embedder
+        from embedding.upserter import Upserter
+    except Exception as e:
+        logger.error("Failed to import embedding helpers: %s", e)
+        sys.exit(1)
+
+    chunker = make_chunker(kind=chunk_method, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    embedder = make_embedder(model_name="BAAI/bge-m3", device=device, use_fp16=use_fp16)
+
+    # connect to Zilliz
     logger.info("Connecting to Zilliz Cloud: %s", zilliz_uri)
     client = MilvusClient(uri=zilliz_uri, token=zilliz_token)
-    if client.has_collection(collection):
-        logger.info("Collection %r already exists – skipping creation.", collection)
-    else:
-        logger.info("Collection %r not found – creating …", collection)
-    _create_collection(client, collection)
+    upserter = Upserter(client)
+    upserter.ensure_collection(collection, dense_dim=DENSE_DIM, varchar_max=MAX_VARCHAR, description=COLLECTION_DESC)
 
-    # --- embed + upsert in batches ----------------------------------------
     total_upserted = 0
-    total_skipped  = 0
+    total_skipped = 0
 
+    # process in batches of pages; chunk each page and embed chunks in batch
     for batch_start in range(0, len(records), batch_size):
-        batch = records[batch_start : batch_start + batch_size]
+        batch = records[batch_start: batch_start + batch_size]
 
-        # filter records missing required fields
-        valid: list[dict] = []
-        for r in batch:
-            if not r.get("retrieval_text") or not r.get("page_id"):
-                logger.warning("Skipping record (missing page_id or retrieval_text): %s", r.get("title"))
-                total_skipped += 1
-                continue
-            valid.append(r)
-
+        valid = [r for r in batch if r.get("retrieval_text") and r.get("page_id")]
         if not valid:
             continue
 
-        texts = [r["retrieval_text"] for r in valid]
-        logger.info(
-            "Embedding batch %d–%d (%d texts) …",
-            batch_start + 1, batch_start + len(valid), len(texts),
-        )
+        chunked_records = []
+        for r in valid:
+            text = (r.get("retrieval_text") or "").strip()
+            if not text:
+                total_skipped += 1
+                continue
+            chunks = chunker.chunk(text)
+            for i, c in enumerate(chunks, start=1):
+                chunked_records.append({
+                    "parent_page_id": int(r["page_id"]),
+                    "chunk_index": i,
+                    "title": r.get("title"),
+                    "slug": r.get("slug"),
+                    "page_type": r.get("page_type"),
+                    "status": r.get("status"),
+                    "url": r.get("url"),
+                    "source": r.get("source", "enwikivoyage"),
+                    "retrieval_text": c,
+                })
 
-        try:
-            dense_vecs, sparse_vecs = _embed_batch(ef, texts)
-        except Exception as e:
-            logger.error("Embedding failed for batch %d: %s", batch_start, e)
-            total_skipped += len(valid)
+        if not chunked_records:
             continue
 
-        rows: list[dict[str, Any]] = []
-        for r, dv, sv in zip(valid, dense_vecs, sparse_vecs):
-            retrieval_text = r["retrieval_text"]
-            if len(retrieval_text) > MAX_VARCHAR:
-                retrieval_text = retrieval_text[:MAX_VARCHAR]
+        texts = [c["retrieval_text"] for c in chunked_records]
+        logger.info("Embedding batch %d–%d (pages=%d chunks=%d) …", batch_start + 1, batch_start + len(valid), len(valid), len(texts))
 
+        try:
+            dense_vecs, sparse_vecs = embedder.embed_texts(texts, batch_size=embedding_batch)
+        except Exception as e:
+            logger.error("Embedding failed for batch %d: %s", batch_start, e)
+            total_skipped += len(chunked_records)
+            continue
+
+        rows = []
+        for c, dv, sv in zip(chunked_records, dense_vecs, sparse_vecs):
+            rt = c["retrieval_text"]
+            if len(rt) > MAX_VARCHAR:
+                rt = rt[:MAX_VARCHAR]
+            parent = int(c["parent_page_id"])
+            idx = int(c["chunk_index"])
             rows.append({
-                "page_id":        int(r["page_id"]),
-                "title":          (r.get("title") or "")[:512],
-                "slug":           (r.get("slug")  or "")[:512],
-                "page_type":      (r.get("page_type") or "other")[:64],
-                "status":         (r.get("status") or "")[:64],
-                "url":            (r.get("url") or "")[:1024],
-                "source":         (r.get("source") or "enwikivoyage")[:64],
-                "retrieval_text": retrieval_text,
-                "dense_vector":   dv,
-                "sparse_vector":  sv,
+                "page_id": parent * 1000 + idx,
+                "title": (c.get("title") or "")[:512],
+                "slug": (c.get("slug") or "")[:512],
+                "page_type": (c.get("page_type") or "other")[:64],
+                "status": (c.get("status") or "")[:64],
+                "url": (c.get("url") or "")[:1024],
+                "source": (c.get("source") or "enwikivoyage")[:64],
+                "retrieval_text": rt,
+                "dense_vector": dv,
+                "sparse_vector": sv,
             })
 
         try:
-            result = client.upsert(collection_name=collection, data=rows)
-            upserted = result.get("upsert_count", len(rows))
+            result = upserter.upsert(collection, rows)
+            upserted = result.get("upsert_count", len(rows)) if isinstance(result, dict) else len(rows)
             total_upserted += upserted
             logger.info("Upserted %d records (total so far: %d).", upserted, total_upserted)
         except Exception as e:
             logger.error("Upsert failed for batch %d: %s", batch_start, e)
             total_skipped += len(rows)
 
-    logger.info(
-        "Done. upserted=%d, skipped=%d, collection=%r",
-        total_upserted, total_skipped, collection,
-    )
+    # flush and load collection for visibility
+    try:
+        upserter.flush(collection)
+        upserter.load_collection(collection)
+    except Exception as e:
+        logger.warning("Flush/load failed (non-fatal): %s", e)
+
+    try:
+        stats = upserter.get_collection_stats(collection)
+    except Exception:
+        stats = {}
+
+    logger.info("Done. upserted=%d, skipped=%d, collection=%r, stats=%s", total_upserted, total_skipped, collection, stats)
 
 
 if __name__ == "__main__":

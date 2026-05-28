@@ -23,6 +23,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 
 # ---------------------------------------------------------------------------
 # dotenv
@@ -128,6 +131,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static UI
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def root_ui():
+    """Serve the single-page chatbot UI."""
+    index_path = Path(__file__).resolve().parent / "static" / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="UI not found")
+    return FileResponse(index_path)
 
 
 # ---------------------------------------------------------------------------

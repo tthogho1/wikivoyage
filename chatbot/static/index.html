@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wikivoyage Chatbot</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:16px;background:#f7f8fb}
+    .container{max-width:900px;margin:24px auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,0.06)}
+    textarea{width:100%;height:90px;padding:12px;font-size:14px}
+    button{margin-top:8px;padding:10px 16px;font-size:14px}
+    .answer{margin-top:16px;padding:12px;background:#f1f5ff;border-left:4px solid #2b6df6}
+    .sources{margin-top:12px}
+    .source{padding:8px;border-top:1px solid #eee}
+    .meta{color:#666;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Wikivoyage Chatbot</h1>
+    <p class="meta">Ask travel questions — hybrid retrieval over Wikivoyage pages.</p>
+
+    <label for="prompt">Question</label>
+    <textarea id="prompt" placeholder="Where should I stay in Paris?"> </textarea>
+    <div>
+      <label for="top_k">Top K</label>
+      <input id="top_k" type="number" value="5" min="1" max="20" style="width:72px" />
+      <button id="send">Ask</button>
+      <button id="clear">Clear</button>
+    </div>
+
+    <div id="status" style="margin-top:12px;color:#666"></div>
+
+    <div id="answer" class="answer" style="display:none"></div>
+    <div id="sources" class="sources"></div>
+  </div>
+
+  <script src="/static/chat.js"></script>
+</body>
+</html>

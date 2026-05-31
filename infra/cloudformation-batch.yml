@@ -24,10 +24,9 @@ Parameters:
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: At least one private subnet id for Batch/Fargate tasks
-
-  SecurityGroupIds:
-    Type: List<AWS::EC2::SecurityGroup::Id>
-    Description: Security group(s) for the Fargate ENIs
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC id where the Batch compute resources and security group will be created
 
 Resources:
   ECRRepository:
@@ -92,6 +91,7 @@ Resources:
                   - s3:PutObject
                   - s3:PutObjectAcl
                   - s3:ListBucket
+                  - s3:GetObject    # ADD THIS
                 Resource: !If
                   - HasBucket
                   - - !Sub arn:aws:s3:::${S3Bucket}
@@ -106,10 +106,31 @@ Resources:
       ServiceRole: !GetAtt BatchServiceRole.Arn
       ComputeResources:
         Type: FARGATE
-        MinvCpus: 0
-        MaxvCpus: 128
+        MaxvCpus: "20"
         Subnets: !Ref SubnetIds
-        SecurityGroupIds: !Ref SecurityGroupIds
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+
+  # Ensure the first provided security group allows outbound HTTPS to reach
+  # S3, ECR, CloudWatch and other AWS HTTPS endpoints. We attach an egress
+  # rule against the first security group in the `SecurityGroupIds` list.
+  # If you pass multiple security groups and want different behavior, create
+  # the rules separately or modify this template to target a specific group.
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for wikivoyage Batch Fargate ENIs
+      VpcId: !Ref VpcId
+
+  BatchSecurityGroupEgressHttps:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BatchSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: Allow HTTPS to S3, ECR, CloudWatch
 
   BatchJobQueue:
     Type: AWS::Batch::JobQueue
@@ -130,8 +151,11 @@ Resources:
         - FARGATE
       ContainerProperties:
         Image: !Join [":", [!GetAtt ECRRepository.RepositoryUri, !Ref ImageTag]]
-        Vcpus: 1
-        Memory: 2048
+        ResourceRequirements:
+          - Type: VCPU
+            Value: "1"
+          - Type: MEMORY
+            Value: "2048"
         Command:
           - python
           - get_wikivoyage.py

@@ -52,6 +52,29 @@ class WikivoyageDumpStreamReader:
                 for chunk in r.iter_content(chunk_size=self.chunk_size):
                     if chunk:
                         yield chunk
+        elif self.source.startswith("s3://"):
+            # Stream directly from S3 without downloading whole object.
+            try:
+                import boto3
+            except Exception as e:  # pragma: no cover - dependency/runtime
+                raise RuntimeError("boto3 is required to stream from s3:// URIs") from e
+
+            bucket_and_key = self.source[5:]
+            parts = bucket_and_key.split("/", 1)
+            bucket = parts[0]
+            key = parts[1] if len(parts) > 1 else ""
+            if not bucket or not key:
+                raise ValueError(f"Invalid s3 URI: {self.source}")
+
+            s3 = boto3.client("s3")
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            body = obj["Body"]
+            # StreamingBody.read() will block until data available; iterate until EOF
+            while True:
+                chunk = body.read(self.chunk_size)
+                if not chunk:
+                    break
+                yield chunk
         else:
             with open(self.source, "rb") as fh:
                 while True:

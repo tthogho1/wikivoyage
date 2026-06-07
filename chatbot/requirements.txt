@@ -1,0 +1,16 @@
+# Runtime dependencies for the Wikivoyage RAG Chatbot API (chatbot/main.py)
+
+# Vector DB client + BGE-M3 hybrid embedding (dense + sparse)
+pymilvus[model]>=2.4.0
+torch>=2.0
+
+# Web framework / ASGI server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
+# LLM answer generation
+openai>=1.0
+
+# Data models / config
+pydantic>=2.0
+python-dotenv>=1.0

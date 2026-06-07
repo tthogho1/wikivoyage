@@ -12,6 +12,11 @@ Environment variables (required):
 
 Environment variables (optional):
     WIKIVOYAGE_PAGES_DIR   Directory of per-page JSONL files  (default: pages)
+    S3_BUCKET              S3 location of JSONL files, e.g.
+                           "s3://my-bucket/prefix" or "my-bucket/prefix".
+                           If set, records are loaded from S3 instead of
+                           WIKIVOYAGE_PAGES_DIR.
+    AWS_REGION             AWS region for the S3 client  (optional)
     ZILLIZ_COLLECTION      Collection name                     (default: wikivoyage_pages)
     ZILLIZ_BATCH_SIZE      Upsert batch size                   (default: 32)
     BGE_M3_DEVICE          "cpu" | "cuda" | "mps"             (default: cpu)
@@ -33,12 +38,14 @@ Collection schema (auto-created if not exists)
 from __future__ import annotations
 
 import glob
+import itertools
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from urllib.parse import urlparse
+from typing import Any, Iterator
 
 # ---------------------------------------------------------------------------
 # Third-party imports (checked at runtime with friendly messages)
@@ -125,15 +132,16 @@ def _create_collection(client: MilvusClient, name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# JSONL loading
+# JSONL loading (streaming)
 # ---------------------------------------------------------------------------
-def _load_records(pages_dir: str) -> list[dict]:
+def _iter_records(pages_dir: str) -> Iterator[dict]:
+    """Yield records one-by-one from local *.jsonl files (streaming)."""
     pattern = os.path.join(pages_dir, "*.jsonl")
     files = sorted(glob.glob(pattern))
     if not files:
         logger.warning("No .jsonl files found in %r", pages_dir)
-        return []
-    records = []
+        return
+    count = 0
     for path in files:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -141,12 +149,83 @@ def _load_records(pages_dir: str) -> list[dict]:
                 if not line:
                     continue
                 try:
-                    rec = json.loads(line)
-                    records.append(rec)
+                    yield json.loads(line)
+                    count += 1
                 except json.JSONDecodeError as e:
                     logger.warning("Skipping bad JSON in %s: %s", path, e)
-    logger.info("Loaded %d records from %s", len(records), pages_dir)
-    return records
+    logger.info("Streamed %d records from %s (%d files)", count, pages_dir, len(files))
+
+
+def _parse_s3_location(s3_bucket: str) -> tuple[str, str]:
+    """Parse S3_BUCKET into (bucket, prefix).
+
+    Accepts forms like:
+        s3://my-bucket/some/prefix
+        my-bucket/some/prefix
+        my-bucket
+    """
+    raw = s3_bucket.strip()
+    if raw.startswith("s3://"):
+        parsed = urlparse(raw)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/")
+    else:
+        parts = raw.split("/", 1)
+        bucket = parts[0]
+        prefix = parts[1] if len(parts) > 1 else ""
+    return bucket, prefix
+
+
+def _iter_records_s3(s3_bucket: str) -> Iterator[dict]:
+    """Yield records one-by-one from *.jsonl objects in S3 (streaming).
+
+    Objects are listed up-front, but each object is downloaded and parsed
+    line-by-line via ``iter_lines`` so the whole dataset never needs to fit
+    in memory.
+    """
+    try:
+        import boto3
+    except ImportError:
+        sys.exit(
+            "[ERROR] S3_BUCKET is set but boto3 is not installed.\n"
+            "Install with:  pip install boto3"
+        )
+
+    bucket, prefix = _parse_s3_location(s3_bucket)
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    s3 = boto3.client("s3", region_name=region) if region else boto3.client("s3")
+
+    logger.info("Listing s3://%s/%s for *.jsonl objects", bucket, prefix)
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith(".jsonl"):
+                keys.append(key)
+
+    if not keys:
+        logger.warning("No .jsonl objects found in s3://%s/%s", bucket, prefix)
+        return
+
+    keys.sort()
+    count = 0
+    for key in keys:
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        # iter_lines streams the body without loading the whole object at once
+        for raw in resp["Body"].iter_lines():
+            line = raw.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+                count += 1
+            except json.JSONDecodeError as e:
+                logger.warning("Skipping bad JSON in s3://%s/%s: %s", bucket, key, e)
+    logger.info(
+        "Streamed %d records from s3://%s/%s (%d files)",
+        count, bucket, prefix, len(keys),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,15 +281,19 @@ def main() -> None:
         )
 
     pages_dir   = os.environ.get("WIKIVOYAGE_PAGES_DIR", "pages")
+    s3_bucket   = os.environ.get("S3_BUCKET", "").strip()
     collection  = os.environ.get("ZILLIZ_COLLECTION", "wikivoyage_pages")
     batch_size  = int(os.environ.get("ZILLIZ_BATCH_SIZE", "32"))
     device      = os.environ.get("BGE_M3_DEVICE", "cpu")
     use_fp16    = os.environ.get("BGE_M3_USE_FP16", "0") == "1"
 
     # --- load JSONL records -----------------------------------------------
-    records = _load_records(pages_dir)
-    if not records:
-        sys.exit("[ERROR] No records found. Check WIKIVOYAGE_PAGES_DIR.")
+    if s3_bucket:
+        logger.info("S3_BUCKET set – streaming records from S3: %s", s3_bucket)
+        record_iter = _iter_records_s3(s3_bucket)
+    else:
+        logger.info("Streaming records from local dir: %s", pages_dir)
+        record_iter = _iter_records(pages_dir)
 
     # --- initialise components: Chunker, Embedder, Upserter ----------------
     chunk_method = os.environ.get("CHUNK_METHOD", "recursive")
@@ -238,10 +321,16 @@ def main() -> None:
 
     total_upserted = 0
     total_skipped = 0
+    total_pages = 0
 
-    # process in batches of pages; chunk each page and embed chunks in batch
-    for batch_start in range(0, len(records), batch_size):
-        batch = records[batch_start: batch_start + batch_size]
+    # process pages in streaming batches; chunk each page and embed in batch
+    batch_no = 0
+    while True:
+        batch = list(itertools.islice(record_iter, batch_size))
+        if not batch:
+            break
+        batch_no += 1
+        total_pages += len(batch)
 
         valid = [r for r in batch if r.get("retrieval_text") and r.get("page_id")]
         if not valid:
@@ -271,12 +360,12 @@ def main() -> None:
             continue
 
         texts = [c["retrieval_text"] for c in chunked_records]
-        logger.info("Embedding batch %d–%d (pages=%d chunks=%d) …", batch_start + 1, batch_start + len(valid), len(valid), len(texts))
+        logger.info("Embedding batch #%d (pages=%d chunks=%d, pages_seen=%d) …", batch_no, len(valid), len(texts), total_pages)
 
         try:
             dense_vecs, sparse_vecs = embedder.embed_texts(texts, batch_size=embedding_batch)
         except Exception as e:
-            logger.error("Embedding failed for batch %d: %s", batch_start, e)
+            logger.error("Embedding failed for batch #%d: %s", batch_no, e)
             total_skipped += len(chunked_records)
             continue
 
@@ -306,8 +395,11 @@ def main() -> None:
             total_upserted += upserted
             logger.info("Upserted %d records (total so far: %d).", upserted, total_upserted)
         except Exception as e:
-            logger.error("Upsert failed for batch %d: %s", batch_start, e)
+            logger.error("Upsert failed for batch #%d: %s", batch_no, e)
             total_skipped += len(rows)
+
+    if total_pages == 0:
+        sys.exit("[ERROR] No records found. Check S3_BUCKET or WIKIVOYAGE_PAGES_DIR.")
 
     # flush and load collection for visibility
     try:

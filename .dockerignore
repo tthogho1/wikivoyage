@@ -17,3 +17,7 @@ data/
 *.gz
 *.zip
 *.tar
+
+# Large data dirs not needed by the chatbot image
+pages/
+*.jsonl

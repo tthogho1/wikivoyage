@@ -27,13 +27,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first to leverage Docker layer caching
-COPY chatbot/requirements.txt /app/chatbot/requirements.txt
+COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir --retries 5 --timeout 100 \
-       -r /app/chatbot/requirements.txt
+       -r /app/requirements.txt
 
 # Copy only what the chatbot service needs
-COPY chatbot/ /app/chatbot/
+COPY . /app/chatbot/
 
 # Create a non-root user and hand over ownership
 RUN useradd --create-home --home-dir /home/appuser appuser \

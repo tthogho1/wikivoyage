@@ -1,15 +1,14 @@
 # Dockerfile for the Wikivoyage RAG Chatbot API (chatbot/main.py)
 #
-# Build (run from the project root – the build context must be the repo root
-# so that the `chatbot/` package is available):
+# --- Hugging Face Spaces (primary) ---
+# Push the chatbot/ directory as the Space repo root.
+# HF Spaces will build and serve automatically on port 7860.
 #
-#   docker build -f chatbot/Dockerfile -t wikivoyage-chatbot .
+# --- Local build (build context = chatbot/ directory) ---
+#   docker build -t wikivoyage-chatbot chatbot/
+#   docker run --rm -p 7860:7860 --env-file .env wikivoyage-chatbot
 #
-# Run:
-#
-#   docker run --rm -p 8000:8000 --env-file .env wikivoyage-chatbot
-#
-# The container serves the FastAPI app + static UI on port 8000.
+# The container serves the FastAPI app + static UI on port 7860.
 
 FROM python:3.11-slim
 
@@ -35,17 +34,17 @@ RUN pip install --upgrade pip setuptools wheel \
 # Copy only what the chatbot service needs
 COPY . /app/chatbot/
 
-# Create a non-root user and hand over ownership
-RUN useradd --create-home --home-dir /home/appuser appuser \
+# Create a non-root user with uid=1000 (required by Hugging Face Spaces)
+RUN useradd --uid 1000 --create-home --home-dir /home/appuser appuser \
     && mkdir -p "$HF_HOME" \
     && chown -R appuser:appuser /app /home/appuser
 USER appuser
 
-EXPOSE 8000
+EXPOSE 7860
 
 # Container-level health probe hitting the /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD curl -fsS http://localhost:7860/health || exit 1
 
 # Start the ASGI server. Use the module path so the `chatbot` package resolves.
-CMD ["uvicorn", "chatbot.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "chatbot.main:app", "--host", "0.0.0.0", "--port", "7860"]

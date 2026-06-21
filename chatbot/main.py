@@ -12,6 +12,7 @@ Environment variables (all loaded from .env):
     BGE_M3_DEVICE         cpu / cuda / mps (default: cpu)
     BGE_M3_USE_FP16       1 to enable fp16 (default: 0)
     OPENAI_MODEL          Chat model (default: gpt-4o-mini)
+    CORS_ALLOW_ORIGINS    Comma-separated allowed origins, or "*" (default: *)
 """
 from __future__ import annotations
 
@@ -125,12 +126,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+# Comma-separated list of allowed origins. Use "*" to allow all (default).
+# Example: CORS_ALLOW_ORIGINS="https://example.com,https://app.example.com"
+_cors_origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "*").strip()
+if _cors_origins_env in ("", "*"):
+    _allow_origins = ["*"]
+else:
+    _allow_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+
+# Per the CORS spec, credentials cannot be combined with the "*" wildcard origin.
+_allow_credentials = _allow_origins != ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+logger.info("CORS allow_origins=%s credentials=%s", _allow_origins, _allow_credentials)
 
 # Serve static UI
 _static_dir = Path(__file__).resolve().parent / "static"

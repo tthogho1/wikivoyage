@@ -4,6 +4,7 @@ from __future__ import annotations
 import bz2
 import codecs
 import logging
+import os
 from typing import Iterable, Iterator, Optional
 
 from .parser import NamespaceAwareXmlParser
@@ -12,6 +13,10 @@ from .models import Page
 logger = logging.getLogger("wikivoyage.stream")
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+
+# Wikimedia returns 403 for generic client User-Agents (e.g. python-requests/x.y);
+# its policy asks for a descriptive one with a contact URL or address.
+DEFAULT_USER_AGENT = "wikivoyage-rag/1.0 (https://github.com/tthogho1/wikivoyage)"
 
 
 class WikivoyageDumpStreamReader:
@@ -47,7 +52,13 @@ class WikivoyageDumpStreamReader:
             # Import requests lazily so importing this module doesn't require it.
             import requests
 
-            with requests.get(self.source, stream=True, timeout=self.timeout) as r:
+            user_agent = os.environ.get("WIKIVOYAGE_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+            with requests.get(
+                self.source,
+                stream=True,
+                timeout=self.timeout,
+                headers={"User-Agent": user_agent},
+            ) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=self.chunk_size):
                     if chunk:

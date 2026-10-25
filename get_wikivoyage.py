@@ -1,6 +1,9 @@
-"""CLI: stream Wikivoyage dump and write 1 file per *city page* as JSONL.
+"""CLI: stream Wikivoyage dump and write *city pages* as JSONL or Parquet.
 
-City-focused schema (one JSON line per file):
+  jsonl    1 file per page: <outdir>/<slug>.jsonl (one JSON line each)
+  parquet  batched part files: <outdir>/part-00000.parquet, part-00001.parquet, ...
+
+City-focused schema (one JSON line / Parquet row per page):
 
   {
     "page_id": int,
@@ -18,25 +21,35 @@ City-focused schema (one JSON line per file):
     "timestamp": str | null,        # last-revision timestamp from dump
     "wikitext": str,                # original wikitext
     "clean_text": str,              # plain text (best-effort)
-    "sections": [ { "title": str, "anchor": str, "text": str }, ... ]
+    "sections": [ { "title": str, "anchor": str, "text": str }, ... ],
+    "retrieval_text": str
   }
+
+Command-line options (each overrides the matching environment variable):
+  --format {jsonl,parquet}   WIKIVOYAGE_FORMAT     (default: jsonl)
+  --s3-bucket BUCKET         WIKIVOYAGE_S3_BUCKET  "bucket" or "s3://bucket[/prefix]";
+                                                   when set, output goes to S3.
+  --outdir DIR               WIKIVOYAGE_OUTDIR     local dir, or S3 key prefix
+                                                   (default: pages)
 
 Environment variables:
   WIKIVOYAGE_DUMP        URL or local path to the .bz2 dump.
-  WIKIVOYAGE_LIMIT       Max *city* pages to write (0 = unlimited, default 10).
-  WIKIVOYAGE_OUTDIR      Output directory (default: pages/).
+  WIKIVOYAGE_LIMIT       Max *city* pages to write (0 = unlimited, default 200).
   WIKIVOYAGE_PAGE_TYPES  Comma-separated allowed page types
                          (default: "city"; use "city,region,country,district"
                          to broaden or "*" to disable the filter).
+  WIKIVOYAGE_PARQUET_ROWS_PER_FILE  Rows per Parquet part file (default 10000).
   WIKIVOYAGE_SITE        Base wiki URL (default: https://en.wikivoyage.org/wiki/).
 """
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import json
 import logging
 import os
 import re
+import tempfile
 from typing import Optional
 from urllib.parse import quote
 
@@ -343,25 +356,184 @@ def build_record(page: Page, page_type: str, status: Optional[str], slug: str) -
 
 
 # ---------------------------------------------------------------------------
+# Parquet output
+# ---------------------------------------------------------------------------
+def _parquet_schema(pa):
+    """Explicit schema so all-null columns in a batch don't get type `null`."""
+    section = pa.struct([
+        ("title", pa.string()),
+        ("anchor", pa.string()),
+        ("text", pa.string()),
+    ])
+    return pa.schema([
+        ("page_id", pa.int64()),
+        ("title", pa.string()),
+        ("slug", pa.string()),
+        ("namespace", pa.int64()),
+        ("page_type", pa.string()),
+        ("status", pa.string()),
+        ("is_redirect", pa.bool_()),
+        ("redirect_target", pa.string()),
+        ("source", pa.string()),
+        ("url", pa.string()),
+        ("retrieved_at", pa.string()),
+        ("revision_id", pa.int64()),
+        ("timestamp", pa.string()),
+        ("wikitext", pa.string()),
+        ("clean_text", pa.string()),
+        ("sections", pa.list_(section)),
+        ("retrieval_text", pa.string()),
+    ])
+
+
+class ParquetSink:
+    """Write records to rolling part-NNNNN.parquet files, locally or to S3.
+
+    Records are buffered into row groups of `row_group_size`; a new part file is
+    started every `rows_per_file` rows. In S3 mode each part is written to a
+    temp file and uploaded when it is closed.
+    """
+
+    def __init__(
+        self,
+        outdir: str,
+        s3_client=None,
+        s3_bucket: str = "",
+        s3_prefix: str = "",
+        rows_per_file: int = 10000,
+        row_group_size: int = 500,
+    ) -> None:
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except Exception as e:  # pragma: no cover - dependency/runtime
+            raise RuntimeError("pyarrow is required for --format parquet") from e
+        self._pa, self._pq = pa, pq
+        self._schema = _parquet_schema(pa)
+        self.outdir = outdir
+        self.s3_client = s3_client
+        self.s3_bucket = s3_bucket
+        self.s3_prefix = s3_prefix
+        self.rows_per_file = max(1, rows_per_file)
+        self.row_group_size = max(1, row_group_size)
+        self._buf: list[dict] = []
+        self._writer = None
+        self._path: Optional[str] = None
+        self._rows_in_file = 0
+        self._part = 0
+        self.files_written: list[str] = []
+
+    def _open(self) -> None:
+        name = f"part-{self._part:05d}.parquet"
+        self._part += 1
+        if self.s3_client is not None:
+            fd, self._path = tempfile.mkstemp(suffix=".parquet")
+            os.close(fd)
+            self._dest = f"s3://{self.s3_bucket}/{self.s3_prefix}{name}"
+        else:
+            self._path = os.path.join(self.outdir, name)
+            self._dest = self._path
+        self._writer = self._pq.ParquetWriter(self._path, self._schema, compression="zstd")
+        self._rows_in_file = 0
+
+    def _flush(self) -> None:
+        if not self._buf:
+            return
+        if self._writer is None:
+            self._open()
+        table = self._pa.Table.from_pylist(self._buf, schema=self._schema)
+        self._writer.write_table(table)
+        self._rows_in_file += len(self._buf)
+        self._buf.clear()
+
+    def _close_file(self) -> None:
+        if self._writer is None:
+            return
+        self._writer.close()
+        self._writer = None
+        if self.s3_client is not None:
+            key = self._dest.split("/", 3)[3]
+            try:
+                self.s3_client.upload_file(self._path, self.s3_bucket, key)
+            finally:
+                os.remove(self._path)
+        logger.info("wrote %s (%d rows)", self._dest, self._rows_in_file)
+        self.files_written.append(self._dest)
+
+    def add(self, record: dict) -> None:
+        self._buf.append(record)
+        room = self.rows_per_file - self._rows_in_file
+        if len(self._buf) >= min(self.row_group_size, room):
+            self._flush()
+            if self._rows_in_file >= self.rows_per_file:
+                self._close_file()
+
+    def close(self) -> None:
+        self._flush()
+        self._close_file()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main() -> None:
+def _parse_s3_bucket(value: str) -> tuple[str, Optional[str]]:
+    """Split "bucket" or "s3://bucket[/prefix]" into (bucket, prefix | None)."""
+    value = value.strip()
+    if value.startswith("s3://"):
+        value = value[5:]
+    if "/" in value:
+        bucket, prefix = value.split("/", 1)
+        return bucket, prefix.strip("/")
+    return value, None
+
+
+def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Stream the Wikivoyage dump and write city pages as JSONL or Parquet.",
+    )
+    p.add_argument(
+        "--format",
+        choices=("jsonl", "parquet"),
+        default=os.environ.get("WIKIVOYAGE_FORMAT", "jsonl").strip().lower() or "jsonl",
+        help="output format (env WIKIVOYAGE_FORMAT, default: jsonl)",
+    )
+    p.add_argument(
+        "--s3-bucket",
+        default=os.environ.get("WIKIVOYAGE_S3_BUCKET", "").strip(),
+        help='output bucket, "bucket" or "s3://bucket[/prefix]"; '
+             "writes to S3 when set (env WIKIVOYAGE_S3_BUCKET)",
+    )
+    p.add_argument(
+        "--outdir",
+        default=os.environ.get("WIKIVOYAGE_OUTDIR", "pages").strip(),
+        help="local output dir, or S3 key prefix in S3 mode "
+             "(env WIKIVOYAGE_OUTDIR, default: pages)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    args = _parse_args(argv)
+    if args.format not in ("jsonl", "parquet"):
+        raise SystemExit(f"invalid format {args.format!r} (expected jsonl or parquet)")
 
     source = os.environ.get("WIKIVOYAGE_DUMP", DUMP_URL)
     limit = int(os.environ.get("WIKIVOYAGE_LIMIT", "200"))
-    outdir_env = os.environ.get("WIKIVOYAGE_OUTDIR", "pages").strip()
+    rows_per_file = int(os.environ.get("WIKIVOYAGE_PARQUET_ROWS_PER_FILE", "10000"))
+    outdir_env = args.outdir
     types_env = os.environ.get("WIKIVOYAGE_PAGE_TYPES", "city").strip()
     allowed_types: Optional[set[str]] = (
         None if types_env == "*" else {t.strip() for t in types_env.split(",") if t.strip()}
     )
 
-    # S3 configuration: if WIKIVOYAGE_S3_BUCKET is set, write to S3.
-    s3_bucket = os.environ.get("WIKIVOYAGE_S3_BUCKET", "").strip()
-    s3_prefix = outdir_env.strip("/")
+    # S3 configuration: if --s3-bucket / WIKIVOYAGE_S3_BUCKET is set, write to S3.
+    # A prefix given in "s3://bucket/prefix" takes precedence over --outdir.
+    s3_bucket, s3_url_prefix = _parse_s3_bucket(args.s3_bucket)
+    s3_prefix = (s3_url_prefix if s3_url_prefix is not None else outdir_env).strip("/")
     if s3_prefix:
         s3_prefix = s3_prefix + "/"
 
@@ -380,6 +552,16 @@ def main() -> None:
     else:
         # when using S3, we'll use the prefix (may be empty)
         outdir = s3_prefix
+
+    sink: Optional[ParquetSink] = None
+    if args.format == "parquet":
+        sink = ParquetSink(
+            outdir,
+            s3_client=s3_client,
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix,
+            rows_per_file=rows_per_file,
+        )
 
     reader = WikivoyageDumpStreamReader(source)
     used_stems: dict[str, int] = {}
@@ -406,12 +588,15 @@ def main() -> None:
 
         title = page.title or "_unnamed_"
         slug = _safe_filename(title)
-        outpath = _unique_path(outdir, slug, used_stems, s3_mode=s3_mode)
+        # Parquet doesn't write per-page files, so only dedup slugs within the run.
+        outpath = _unique_path(outdir, slug, used_stems, s3_mode=s3_mode or sink is not None)
         # Update slug if path was disambiguated
         final_stem = os.path.splitext(os.path.basename(outpath))[0]
         record = build_record(page, page_type, status, final_stem)
 
-        if s3_mode:
+        if sink is not None:
+            sink.add(record)
+        elif s3_mode:
             key = (s3_prefix or "") + os.path.basename(outpath)
             s3_client.put_object(
                 Bucket=s3_bucket,
@@ -423,12 +608,22 @@ def main() -> None:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         written += 1
-        logger.info("wrote %s (type=%s)", os.path.basename(outpath), page_type)
+        if sink is None:
+            logger.info("wrote %s (type=%s)", os.path.basename(outpath), page_type)
         if limit > 0 and written >= limit:
             break
 
+    if sink is not None:
+        sink.close()
+
+    dest = f"s3://{s3_bucket}/{s3_prefix}" if s3_mode else f"{outdir}/"
+    what = (
+        f"{written} pages in {len(sink.files_written)} Parquet file(s)"
+        if sink is not None
+        else f"{written} city-page JSONL files"
+    )
     print(
-        f"Wrote {written} city-page JSONL files → {outdir}/ "
+        f"Wrote {what} → {dest} "
         f"(seen={reader.page_count}, skipped_ns={skipped_ns}, "
         f"skipped_redirect={skipped_redir}, skipped_type={skipped_type}, "
         f"compressed={reader.compressed_bytes} B, "

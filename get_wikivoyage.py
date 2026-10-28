@@ -20,8 +20,9 @@ City-focused schema (one JSON line / Parquet row per page):
     "revision_id": int | null,
     "timestamp": str | null,        # last-revision timestamp from dump
     "wikitext": str,                # original wikitext
-    "clean_text": str,              # plain text (best-effort)
-    "sections": [ { "title": str, "anchor": str, "text": str }, ... ],
+    "clean_text": str,              # plain text; listings rendered as one line each
+    "sections": [ { "title": str, "path": str,  # path: "Sleep > Budget"
+                    "anchor": str, "text": str }, ... ],
     "retrieval_text": str
   }
 
@@ -127,14 +128,85 @@ def detect_page_type_and_status(wikitext: str) -> tuple[str, Optional[str]]:
     return ptype, status
 
 
+# Wikivoyage listing templates: {{eat | name=... | address=... | content=...}}
+_LISTING_TYPES = {"see", "do", "buy", "eat", "drink", "sleep", "listing", "go"}
+_LISTING_LABELLED = (
+    ("phone", "Phone"),
+    ("hours", "Hours"),
+    ("checkin", "Check-in"),
+    ("checkout", "Check-out"),
+    ("price", "Price"),
+)
+
+
+def _tpl_param(tpl, key: str) -> str:
+    if not tpl.has(key):
+        return ""
+    return re.sub(r"\s+", " ", _render_wikicode(tpl.get(key).value)).strip()
+
+
+def _render_listing(tpl) -> str:
+    """Render a listing template as one plain-text line.
+
+    e.g. "Sushi Dai (alt), Tsukiji (directions). Hours: 5-14. Price: ¥4000. content"
+    """
+    head = _tpl_param(tpl, "name")
+    alt = _tpl_param(tpl, "alt")
+    if alt:
+        head = f"{head} ({alt})" if head else alt
+    address = _tpl_param(tpl, "address")
+    directions = _tpl_param(tpl, "directions")
+    if directions:
+        address = f"{address} ({directions})" if address else directions
+    if address:
+        head = f"{head}, {address}" if head else address
+    parts = [head]
+    parts += [f"{label}: {v}" for key, label in _LISTING_LABELLED if (v := _tpl_param(tpl, key))]
+    parts.append(_tpl_param(tpl, "content"))
+    parts = [p.rstrip(" .") for p in parts if p and p.strip(" .")]
+    return ". ".join(parts) + "." if parts else ""
+
+
+def _render_wikicode(code) -> str:
+    """strip_code(), but keep listings as text and {{marker}} as its name.
+
+    Plain strip_code() drops every template, which removes all of a page's
+    see/eat/sleep/... listings. Other templates are still dropped, as are
+    [[File:...]] / [[Image:...]] / [[Category:...]] links (strip_code would
+    otherwise leave "thumb|caption" text behind).
+    """
+    for link in code.filter_wikilinks(recursive=False):
+        target = str(link.title).strip().lower()
+        if target.startswith(("file:", "image:", "category:")):
+            code.remove(link)
+    for tpl in code.filter_templates(recursive=False):
+        name = str(tpl.name).strip().lower()
+        if name in _LISTING_TYPES:
+            rendered = _render_listing(tpl)
+        elif name == "marker":
+            rendered = _tpl_param(tpl, "name")
+        else:
+            rendered = ""
+        if rendered:
+            code.replace(tpl, rendered)
+        else:
+            code.remove(tpl)
+    return code.strip_code()
+
+
 def wikitext_to_plain(wikitext: str) -> str:
     if not wikitext:
         return ""
     if mwparserfromhell is not None:
         try:
-            return mwparserfromhell.parse(wikitext).strip_code().strip()
+            text = _render_wikicode(mwparserfromhell.parse(wikitext))
+            # Keep line breaks (one listing per line); collapse gaps left by removed templates.
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r" *\n *", "\n", text)
+            return re.sub(r"\n{3,}", "\n\n", text).strip()
         except Exception:
             pass
+    # Fallback without mwparserfromhell: listings are dropped with other templates.
     text = re.sub(r"\{\{.*?\}\}", " ", wikitext, flags=re.S)
     text = re.sub(r"\[\[([^|\]]*\|)?([^\]]+)\]\]", r"\2", text)
     text = re.sub(r"''+", "", text)
@@ -144,29 +216,39 @@ def wikitext_to_plain(wikitext: str) -> str:
 
 
 def split_sections(wikitext: str) -> list[dict]:
-    """Split wikitext into sections by ==headings== and clean each body."""
+    """Split wikitext into sections by ==headings== and clean each body.
+
+    Every heading level gets its own section; `path` joins the enclosing
+    headings ("Sleep > Budget") since titles like "Budget" repeat under
+    several parents.
+    """
     if not wikitext:
         return []
     matches = list(_HEADING_RE.finditer(wikitext))
     sections: list[dict] = []
 
-    def _push(title: Optional[str], body: str) -> None:
+    def _push(title: Optional[str], path: str, body: str) -> None:
         text = wikitext_to_plain(body)
         if not text:
             return
         anchor = re.sub(r"[^\w\-]", "_", title).strip("_") if title else ""
-        sections.append({"title": title or "", "anchor": anchor, "text": text})
+        sections.append({"title": title or "", "path": path, "anchor": anchor, "text": text})
 
     if not matches:
-        _push(None, wikitext)
+        _push(None, "", wikitext)
         return sections
 
-    _push(None, wikitext[: matches[0].start()])  # lead
+    _push(None, "", wikitext[: matches[0].start()])  # lead
+    stack: list[tuple[int, str]] = []  # (heading level, title) of enclosing headings
     for i, m in enumerate(matches):
+        level = len(m.group(1))
         title = m.group(2).strip()
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title))
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(wikitext)
-        _push(title, wikitext[start:end])
+        _push(title, " > ".join(t for _, t in stack), wikitext[start:end])
     return sections
 
 
@@ -362,6 +444,7 @@ def _parquet_schema(pa):
     """Explicit schema so all-null columns in a batch don't get type `null`."""
     section = pa.struct([
         ("title", pa.string()),
+        ("path", pa.string()),
         ("anchor", pa.string()),
         ("text", pa.string()),
     ])

@@ -11,7 +11,7 @@ infra/DEPLOYMENT.md
 
 # Stray pip output files
 =*
-
+CLAUDE.md
 # Virtual environment
 .venv/
 __pycache__/

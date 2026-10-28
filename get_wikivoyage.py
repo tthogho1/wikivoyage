@@ -23,7 +23,8 @@ City-focused schema (one JSON line / Parquet row per page):
     "clean_text": str,              # plain text; listings rendered as one line each
     "sections": [ { "title": str, "path": str,  # path: "Sleep > Budget"
                     "anchor": str, "text": str }, ... ],
-    "retrieval_text": str
+    "retrieval_text": str,
+    "is_part_of": str | null        # parent region from {{IsPartOf|...}}
   }
 
 Command-line options (each overrides the matching environment variable):
@@ -79,6 +80,9 @@ _UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _HEADING_RE = re.compile(r"(?m)^(={2,})\s*(.+?)\s*\1\s*$")
 
 # Wikivoyage status templates: {{outlinecity}}, {{usablecity}}, ...
+# Breadcrumb parent: {{IsPartOf|North Rhine-Westphalia}} (older pages use {{IsIn|...}})
+_IS_PART_OF_RE = re.compile(r"\{\{\s*(?:IsPartOf|IsIn)\s*\|\s*([^|}]+)", re.IGNORECASE)
+
 _STATUS_RE = re.compile(
     r"\{\{\s*(stub|outline|usable|guide|star)"
     r"(city|region|country|district|park|airport|continent|huge ?city|small ?city)\b",
@@ -101,6 +105,15 @@ def _is_redirect(wikitext: str) -> tuple[bool, Optional[str]]:
         m = re.search(r"\[\[([^\]|]+)", first)
         return True, (m.group(1).strip() if m else None)
     return False, None
+
+
+def extract_is_part_of(wikitext: str) -> Optional[str]:
+    """Return the parent region named by {{IsPartOf|...}}, or None."""
+    m = _IS_PART_OF_RE.search(wikitext or "")
+    if not m:
+        return None
+    parent = m.group(1).replace("_", " ").strip()
+    return parent or None
 
 
 def detect_page_type_and_status(wikitext: str) -> tuple[str, Optional[str]]:
@@ -434,6 +447,7 @@ def build_record(page: Page, page_type: str, status: Optional[str], slug: str) -
         "clean_text": wikitext_to_plain(page.text or ""),
         "sections": sections,
         "retrieval_text": build_retrieval_text(page.title or "", page_type, page.text or ""),
+        "is_part_of": extract_is_part_of(page.text or ""),
     }
 
 
@@ -466,6 +480,7 @@ def _parquet_schema(pa):
         ("clean_text", pa.string()),
         ("sections", pa.list_(section)),
         ("retrieval_text", pa.string()),
+        ("is_part_of", pa.string()),
     ])
 
 

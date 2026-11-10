@@ -16,3 +16,6 @@ CLAUDE.md
 .venv/
 __pycache__/
 *.pyc
+
+# Local embedding work dir (scripts/embed_chunks.py)
+chunks_embedded/

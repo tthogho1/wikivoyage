@@ -13,6 +13,7 @@ class Page:
     text: str
     revision_id: Optional[str] = None
     timestamp: Optional[str] = None
+    redirect_title: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -22,4 +23,5 @@ class Page:
             "text": self.text,
             "revision_id": self.revision_id,
             "timestamp": self.timestamp,
+            "redirect_title": self.redirect_title,
         }

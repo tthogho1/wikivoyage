@@ -69,6 +69,10 @@ class NamespaceAwareXmlParser:
             for child in elem.findall(f"{ns}id"):
                 page_id = child.text
                 break
+            redirect_node = elem.find(f"{ns}redirect")
+            redirect_title: Optional[str] = (
+                redirect_node.get("title") if redirect_node is not None else None
+            )
             revision_node = elem.find(f"{ns}revision")
             revision_id: Optional[str] = None
             timestamp: Optional[str] = None
@@ -93,6 +97,7 @@ class NamespaceAwareXmlParser:
                 text=page_text,
                 revision_id=revision_id,
                 timestamp=timestamp,
+                redirect_title=redirect_title,
             )
 
             elem.clear()

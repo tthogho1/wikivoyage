@@ -5,7 +5,6 @@
 - Source requirement: `design/specification2.md`・`design/specification3.md` — Wikivoyage ダンプから「1 記事 = 1 エンティティ、記事内チャンク = StructArray 要素」のテキスト＋画像データベースを Zilliz Cloud に構築する。テキストチャンクは `scripts/embed_chunks.py` と同じモデル（`Qwen/Qwen3-Embedding-0.6B`）で埋め込み、画像は SigLIP2 で埋め込む（specification3.md 5 行目のユーザー指定）。
 
 ---
-
 ## 1. 概要
 
 既存リポジトリには、(a) `scripts/embed_chunks.py` が stage 1 のページ Parquet をセクション単位でチャンク化し Qwen3-Embedding-0.6B で埋め込んだ `chunks_embedded/part-*.parquet`（320,229 チャンク、M4 で約 2 日の計算結果）と、(b) `image_embedding/` パッケージが記事内画像を SigLIP2 で埋め込んだ中間成果物（`IMAGES_WORKDIR` の refs／Commons メタデータ／埋め込み Parquet）がある。本設計は **これらを再計算せずに page_id で結合**し、Zilliz Cloud の新コレクション `wikivoyage_articles` に「1 記事 = 1 エンティティ」として、テキストチャンクと画像をそれぞれ StructArray（Array of Structs）フィールドに格納する組み立て（assemble）・登録（upsert）・検索（search）の新パッケージ `article_db/` を追加する。これにより、記事単位の置換更新（古いチャンクが残らない）と、チャンク単位／画像単位の要素レベルベクトル検索・見出しフィルタを両立する。利用者はリポジトリ所有者（開発者）で、検索は当面 CLI／Python API として提供し、chatbot 統合は次フェーズとする。

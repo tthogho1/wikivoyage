@@ -18,3 +18,6 @@ tiktoken>=0.4
 
  # AWS S3
 boto3>=1.28
+
+# Image pipeline (image_embedding/)
+-r image_embedding/requirements-embed.txt

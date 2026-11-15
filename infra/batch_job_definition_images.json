@@ -1,0 +1,26 @@
+{
+  "jobDefinitionName": "wikivoyage-images-fargate",
+  "type": "container",
+  "platformCapabilities": ["FARGATE"],
+  "parameters": {
+    "stage": "extract",
+    "dump_date": "20261101"
+  },
+  "containerProperties": {
+    "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/wikivoyage-images:latest",
+    "resourceRequirements": [
+      { "type": "VCPU", "value": "2" },
+      { "type": "MEMORY", "value": "4096" }
+    ],
+    "ephemeralStorage": { "sizeInGiB": 50 },
+    "command": ["Ref::stage", "--dump-date", "Ref::dump_date"],
+    "environment": [
+      { "name": "IMAGES_WORKDIR", "value": "s3://BUCKET/images_work" },
+      { "name": "IMAGES_API_CONCURRENCY", "value": "2" },
+      { "name": "IMAGES_DOWNLOAD_CONCURRENCY", "value": "3" },
+      { "name": "IMAGES_DOWNLOAD_RPS", "value": "4" }
+    ],
+    "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/AWSBatchECSRole",
+    "jobRoleArn": "arn:aws:iam::ACCOUNT_ID:role/wikivoyageTaskRole"
+  }
+}

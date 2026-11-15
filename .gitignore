@@ -19,3 +19,9 @@ __pycache__/
 
 # Local embedding work dir (scripts/embed_chunks.py)
 chunks_embedded/
+
+# Image pipeline work dir (python -m image_embedding)
+images_work/
+
+# StructArray article DB work dir
+articles_work/

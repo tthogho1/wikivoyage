@@ -1,0 +1,10 @@
+# Image pipeline, fetch-side stages (dump, extract, commons, fetch, upsert, replay, status).
+# No torch: this is what the Fargate image installs.
+requests>=2.31
+mwparserfromhell>=0.6.6
+boto3>=1.28
+pyarrow>=14.0
+Pillow>=10.3
+numpy>=1.26
+pymilvus>=2.5
+python-dotenv>=1.0

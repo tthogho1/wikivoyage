@@ -1,0 +1,6 @@
+# Adds the SigLIP2 model for the embed and search stages (run on a GPU / Apple Silicon machine).
+-r requirements.txt
+torch>=2.3
+transformers>=4.49,<6
+sentencepiece>=0.2
+protobuf>=4

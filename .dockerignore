@@ -21,3 +21,6 @@ data/
 # Large data dirs not needed by the chatbot image
 pages/
 *.jsonl
+
+# Image pipeline work dir
+images_work/

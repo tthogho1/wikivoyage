@@ -253,3 +253,46 @@ BGE_M3_USE_FP16=1
 ```bash
 pip install -r requirements.txt
 ```
+
+---
+
+## Image pipeline (`python -m image_embedding`)
+
+Embeds every image used in Wikivoyage articles with
+[SigLIP2](https://huggingface.co/google/siglip2-so400m-patch16-384) and stores them in the Zilliz
+collection `wikivoyage_images`, one row per (article, image) pair, with page URL/title, image URL and
+license/attribution. Design: [`design/image-embedding-design.md`](design/image-embedding-design.md).
+
+```bash
+pip install -r image_embedding/requirements-embed.txt   # fetch stages only: image_embedding/requirements.txt
+
+D=20261101   # a dump date listed at https://dumps.wikimedia.org/enwikivoyage/
+python -m image_embedding dump    --dump-date $D   # download + SHA-1 check (resumable)
+python -m image_embedding extract --dump-date $D   # [[File:]], <gallery>, template image= → refs.jsonl
+python -m image_embedding commons --dump-date $D   # Commons imageinfo: URLs, MIME, SHA-1, license
+python -m image_embedding fetch   --dump-date $D   # 768px thumbnails → validate → RGB JPEG
+python -m image_embedding embed   --dump-date $D   # SigLIP2 vectors (GPU / Apple Silicon recommended)
+python -m image_embedding upsert  --dump-date $D   # Zilliz upsert, 100 rows per batch
+python -m image_embedding all     --dump-date $D --limit 20   # everything, small trial run
+
+python -m image_embedding status  --dump-date $D
+python -m image_embedding replay  --dump-date $D   # re-send failed upsert batches
+python -m image_embedding search  --text "beach at sunset" [--page-title Tokyo]
+python -m image_embedding search  --image photo.jpg | --image-url https://...
+```
+
+Every stage can be re-run: finished work is skipped, so an interrupted run resumes. Images and
+embeddings are cached across dumps (keyed by the Commons SHA-1). On a new dump,
+`upsert --prune` deletes rows whose image was removed from the article. It runs only if every row
+was upserted. Intermediate files live under `IMAGES_WORKDIR` (local dir or `s3://…`).
+
+Exit codes: `1` error, `2` dump checksum mismatch, `3` collection schema mismatch, `4` failed upsert
+batches (run `replay`).
+
+Tests: `pip install -r image_embedding/requirements-dev.txt && pytest` (the real-model test runs only
+with `pytest -m model`, a ~4.5 GB download).
+
+On AWS Batch, build `Dockerfile.images`
+(`DOCKERFILE=Dockerfile.images REPO_NAME=wikivoyage-images ./scripts/publish_ecr.sh`) and submit jobs
+with `--parameters stage=<stage>,dump_date=<date>` against `wikivoyage-images-fargate`. The image has
+no torch: run `embed` on a GPU or Apple Silicon machine against the same `IMAGES_WORKDIR=s3://…`.

@@ -1,0 +1,7 @@
+# Search CLI and retrieval API (article_db.search / article_db.api): Qwen3 + SigLIP2 query encoders.
+-r ../image_embedding/requirements-embed.txt
+pymilvus>=3.0
+sentence-transformers>=3
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

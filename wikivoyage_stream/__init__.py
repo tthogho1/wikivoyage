@@ -5,5 +5,6 @@ Exports: Page, NamespaceAwareXmlParser, WikivoyageDumpStreamReader
 from .models import Page
 from .parser import NamespaceAwareXmlParser
 from .reader import WikivoyageDumpStreamReader
+from . import filters
 
-__all__ = ["Page", "NamespaceAwareXmlParser", "WikivoyageDumpStreamReader"]
+__all__ = ["Page", "NamespaceAwareXmlParser", "WikivoyageDumpStreamReader", "filters"]

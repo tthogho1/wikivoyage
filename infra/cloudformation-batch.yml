@@ -21,6 +21,11 @@ Parameters:
     Default: ""
     Description: (Optional) S3 bucket name to allow writes. Leave empty to skip S3 permissions.
 
+  ImagesRepositoryName:
+    Type: String
+    Default: wikivoyage-images
+    Description: ECR repository for the image pipeline (Dockerfile.images)
+
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: At least one private subnet id for Batch/Fargate tasks
@@ -92,6 +97,7 @@ Resources:
                   - s3:PutObjectAcl
                   - s3:ListBucket
                   - s3:GetObject    # ADD THIS
+                  - s3:DeleteObject # image pipeline: replay moves failed batches
                 Resource: !If
                   - HasBucket
                   - - !Sub arn:aws:s3:::${S3Bucket}
@@ -167,6 +173,45 @@ Resources:
           - Name: WIKIVOYAGE_S3_BUCKET
             Value: !Ref S3Bucket
 
+  ImagesECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ImagesRepositoryName
+      ImageScanningConfiguration:
+        scanOnPush: true
+
+  # Image pipeline (python -m image_embedding). Submit with e.g.
+  #   aws batch submit-job --job-name wv-img-extract --job-queue wikivoyage-queue \
+  #     --job-definition wikivoyage-images-fargate --parameters stage=extract,dump_date=20261101
+  ImagesJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: wikivoyage-images-fargate
+      Type: container
+      PlatformCapabilities:
+        - FARGATE
+      Parameters:
+        stage: extract
+        dump_date: "20261101"
+      ContainerProperties:
+        Image: !Join [":", [!GetAtt ImagesECRRepository.RepositoryUri, !Ref ImageTag]]
+        ResourceRequirements:
+          - Type: VCPU
+            Value: "2"
+          - Type: MEMORY
+            Value: "4096"
+        EphemeralStorage:
+          SizeInGiB: 50
+        Command:
+          - Ref::stage
+          - --dump-date
+          - Ref::dump_date
+        ExecutionRoleArn: !GetAtt BatchECSExecutionRole.Arn
+        JobRoleArn: !GetAtt WikivoyageTaskRole.Arn
+        Environment:
+          - Name: IMAGES_WORKDIR
+            Value: !Sub s3://${S3Bucket}/images_work
+
 Conditions:
   HasBucket: !Not [!Equals [!Ref S3Bucket, ""]]
 
@@ -178,6 +223,10 @@ Outputs:
   JobDefinitionName:
     Description: Batch JobDefinition name
     Value: !Ref BatchJobDefinition
+
+  ImagesJobDefinitionName:
+    Description: Batch JobDefinition for the image pipeline
+    Value: !Ref ImagesJobDefinition
 
   JobQueueName:
     Description: Batch JobQueue name

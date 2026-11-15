@@ -57,6 +57,7 @@ from urllib.parse import quote
 
 from wikivoyage_stream.reader import WikivoyageDumpStreamReader
 from wikivoyage_stream.models import Page
+from wikivoyage_stream import filters as _filters
 
 try:
     import mwparserfromhell  # optional, nicer wikitext -> plain text
@@ -74,7 +75,7 @@ DUMP_URL = (
     "https://dumps.wikimedia.org/enwikivoyage/latest/"
     "enwikivoyage-latest-pages-articles.xml.bz2"
 )
-SITE_BASE = "https://en.wikivoyage.org/wiki/"
+SITE_BASE = _filters.SITE_BASE
 
 _UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _HEADING_RE = re.compile(r"(?m)^(={2,})\s*(.+?)\s*\1\s*$")
@@ -99,12 +100,8 @@ def _safe_filename(title: str) -> str:
     return name[:200] or "_unnamed_"
 
 
-def _is_redirect(wikitext: str) -> tuple[bool, Optional[str]]:
-    first = next((l.strip() for l in wikitext.splitlines() if l.strip()), "")
-    if first.upper().startswith("#REDIRECT"):
-        m = re.search(r"\[\[([^\]|]+)", first)
-        return True, (m.group(1).strip() if m else None)
-    return False, None
+# Kept as an alias so existing callers keep working.
+_is_redirect = _filters.is_redirect
 
 
 def extract_is_part_of(wikitext: str) -> Optional[str]:
@@ -425,7 +422,7 @@ def build_record(page: Page, page_type: str, status: Optional[str], slug: str) -
         if page.revision_id and str(page.revision_id).isdigit()
         else page.revision_id
     )
-    url = SITE_BASE + quote((page.title or "").replace(" ", "_"), safe="_()',-")
+    url = _filters.page_url(page.title or "", SITE_BASE)
     retrieved_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     sections = split_sections(page.text or "")
 

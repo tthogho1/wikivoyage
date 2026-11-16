@@ -1,0 +1,28 @@
+# Managed by Ansible. Retrieval API: Qwen3 + SigLIP2 query encoders → Zilliz wikivoyage_articles.
+[Unit]
+Description=Wikivoyage retrieval API (article_db.api)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ env_dir }}/app.env
+Environment=HOME={{ app_root }}
+Environment=HF_HOME={{ hf_home }}
+Environment=HF_HUB_OFFLINE=1
+Environment=QWEN_DEVICE=cpu
+Environment=SIGLIP_DEVICE=cpu
+Environment=TOKENIZERS_PARALLELISM=false
+ExecStart={{ venv_dir }}/bin/uvicorn article_db.api:app --host 127.0.0.1 --port {{ api_port }} --workers 1
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

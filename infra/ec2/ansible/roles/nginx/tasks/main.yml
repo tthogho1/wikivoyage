@@ -1,0 +1,103 @@
+- name: Install nginx and certbot
+  ansible.builtin.apt:
+    name: [nginx, certbot, apache2-utils]
+
+- name: Remove the default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Create the ACME challenge directory
+  ansible.builtin.file:
+    path: /var/www/letsencrypt
+    state: directory
+    mode: "0755"
+
+- name: Rate limit zone for /api/chat
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/wikivoyage-ratelimit.conf
+    content: |
+      # Managed by Ansible. Each chat request calls OpenAI; cap it per client IP.
+      limit_req_zone $binary_remote_addr zone=wikivoyage_chat:10m rate={{ chat_rate_limit }};
+      limit_req_status 429;
+    mode: "0644"
+  notify: reload nginx
+
+- name: Basic auth password file
+  ansible.builtin.command:
+    cmd: htpasswd -iBc /etc/nginx/wikivoyage.htpasswd {{ basic_auth_user | quote }}
+    stdin: "{{ basic_auth_password }}"
+  when: basic_auth_user | length > 0 and basic_auth_password | length > 0
+  changed_when: false   # rewritten every run (new salt); nginx reads the file per request, no reload needed
+  no_log: true
+
+- name: Remove the basic auth file when auth is off
+  ansible.builtin.file:
+    path: /etc/nginx/wikivoyage.htpasswd
+    state: absent
+  when: not (basic_auth_user | length > 0 and basic_auth_password | length > 0)
+  notify: reload nginx
+
+- name: Check for an existing certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+  register: cert
+
+# First run: serve HTTP only, so Let's Encrypt can reach the challenge.
+- name: HTTP-only site for the certificate request
+  ansible.builtin.template:
+    src: site-http.conf.j2
+    dest: /etc/nginx/sites-available/wikivoyage.conf
+    mode: "0644"
+  when: not cert.stat.exists
+
+- name: Enable the site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/wikivoyage.conf
+    dest: /etc/nginx/sites-enabled/wikivoyage.conf
+    state: link
+    force: true
+
+- name: Check the nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  when: not cert.stat.exists
+
+- name: Reload nginx with the HTTP-only site
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: reloaded
+    enabled: true
+  when: not cert.stat.exists
+
+- name: Get the Let's Encrypt certificate
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot -w /var/www/letsencrypt -d {{ domain | quote }}
+      --email {{ letsencrypt_email | quote }} --agree-tos --non-interactive --no-eff-email
+    creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+
+- name: Reload nginx after automatic renewals
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    content: |
+      #!/bin/sh
+      systemctl reload nginx
+    mode: "0755"
+
+- name: HTTPS site
+  ansible.builtin.template:
+    src: site-https.conf.j2
+    dest: /etc/nginx/sites-available/wikivoyage.conf
+    mode: "0644"
+  notify: reload nginx
+
+- name: Apply the HTTPS site now
+  ansible.builtin.meta: flush_handlers
+
+- name: Start nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: started
+    enabled: true

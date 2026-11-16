@@ -36,7 +36,7 @@ try:
 except ImportError:
     def load_dotenv(*a, **kw): pass  # type: ignore
 
-_env_path = Path(__file__).resolve().parent.parent / ".env"
+_env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_env_path)
 
 # ---------------------------------------------------------------------------

@@ -18,9 +18,13 @@ data/
 *.zip
 *.tar
 
-# Large data dirs not needed by the chatbot image
+# Large data dirs, not needed in any image
 pages/
 *.jsonl
+*.parquet
+chunks_embedded/
+articles_work/
+webapp/
+legacy/
 
-# Image pipeline work dir
 images_work/

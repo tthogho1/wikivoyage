@@ -1,0 +1,139 @@
+# ---------------------------------------------------------------- Node.js (NodeSource)
+- name: Add the NodeSource signing key
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    dest: /etc/apt/keyrings/nodesource.asc
+    mode: "0644"
+
+- name: Add the NodeSource repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_{{ nodejs_major }}.x nodistro main"
+    filename: nodesource
+    state: present
+
+- name: Install Node.js
+  ansible.builtin.apt:
+    name: nodejs
+    update_cache: true
+
+# ---------------------------------------------------------------- Code
+- name: Check out the repository
+  ansible.builtin.git:
+    repo: "{{ app_repo }}"
+    dest: "{{ app_dir }}"
+    version: "{{ app_branch }}"
+    force: true
+  become_user: "{{ app_user }}"
+  register: app_git
+  notify: [restart api, restart web]
+
+# ---------------------------------------------------------------- Python retrieval API
+- name: Install CPU-only torch into the venv (avoids ~3 GB of CUDA wheels)
+  ansible.builtin.pip:
+    name: torch
+    virtualenv: "{{ venv_dir }}"
+    virtualenv_command: python3 -m venv
+    extra_args: --index-url https://download.pytorch.org/whl/cpu
+  become_user: "{{ app_user }}"
+
+- name: Install the search requirements
+  ansible.builtin.pip:
+    requirements: "{{ app_dir }}/article_db/requirements-search.txt"
+    virtualenv: "{{ venv_dir }}"
+    extra_args: --upgrade-strategy only-if-needed
+  become_user: "{{ app_user }}"
+  notify: restart api
+
+- name: Download both models once, so the service can start offline
+  ansible.builtin.command:
+    cmd: >-
+      {{ venv_dir }}/bin/python -c "
+      from sentence_transformers import SentenceTransformer;
+      from transformers import AutoModel, AutoProcessor;
+      SentenceTransformer('{{ text_model }}');
+      AutoModel.from_pretrained('{{ image_model }}'); AutoProcessor.from_pretrained('{{ image_model }}');
+      open('{{ hf_home }}/.models-ready', 'w').write('{{ text_model }} {{ image_model }}')"
+    creates: "{{ hf_home }}/.models-ready"
+  environment:
+    HF_HOME: "{{ hf_home }}"
+  become_user: "{{ app_user }}"
+
+# ---------------------------------------------------------------- Secrets
+- name: Create the config directory
+  ansible.builtin.file:
+    path: "{{ env_dir }}"
+    state: directory
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0750"
+
+- name: Write the environment file
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ env_dir }}/app.env"
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+  no_log: true
+  notify: [restart api, restart web]
+
+# ---------------------------------------------------------------- Web app
+- name: Check for an existing web build
+  ansible.builtin.stat:
+    path: "{{ app_dir }}/webapp/.next/BUILD_ID"
+  register: web_build
+
+- name: Install web dependencies
+  ansible.builtin.command:
+    cmd: npm ci --no-audit --no-fund
+    chdir: "{{ app_dir }}/webapp"
+  become_user: "{{ app_user }}"
+  environment:
+    npm_config_cache: "{{ app_root }}/.npm"
+  when: app_git.changed or not web_build.stat.exists
+
+- name: Build the web app
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: "{{ app_dir }}/webapp"
+  become_user: "{{ app_user }}"
+  environment:
+    NEXT_TELEMETRY_DISABLED: "1"
+  when: app_git.changed or not web_build.stat.exists
+  notify: restart web
+
+# ---------------------------------------------------------------- Services
+- name: Install systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    mode: "0644"
+  loop: [wikivoyage-api, wikivoyage-web]
+  notify: [restart api, restart web]
+
+- name: Enable and start the services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [wikivoyage-api, wikivoyage-web]
+
+- name: Apply pending restarts before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the retrieval API (loads ~6 GB of models)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ api_port }}/health"
+  register: api_health
+  until: api_health.status == 200
+  retries: 40
+  delay: 15
+
+- name: Wait for the web app
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ web_port }}/"
+  register: web_health
+  until: web_health.status == 200
+  retries: 20
+  delay: 5

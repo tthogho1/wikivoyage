@@ -1,0 +1,35 @@
+# ---- Required: set here or pass with -e ----
+domain: ""                 # e.g. chat.example.com (its DNS A record must point at the Elastic IP)
+letsencrypt_email: ""      # expiry notices from Let's Encrypt
+
+# ---- Code ----
+app_repo: https://github.com/tthogho1/wikivoyage.git
+app_branch: qa             # the branch that has article_db/ and webapp/
+
+# ---- Secrets: read on your machine from the repo-root .env, written to /etc/wikivoyage/app.env ----
+local_env_file: "{{ playbook_dir }}/../../../.env"
+app_secret_keys: [ZILLIZ_URI, ZILLIZ_TOKEN, OPENAI_API_KEY]
+app_optional_keys: [OPENAI_MODEL, ZILLIZ_ARTICLE_COLLECTION, ARTICLES_W_TEXT, ARTICLES_W_IMAGE, ARTICLES_RRF_K]
+
+# Optional HTTP basic auth in front of the whole site (both empty = off).
+# Read from APP_BASIC_AUTH_USER / APP_BASIC_AUTH_PASSWORD in .env unless set here.
+basic_auth_user: ""
+basic_auth_password: ""
+
+# ---- Layout on the server ----
+app_user: wikivoyage
+app_root: /opt/wikivoyage
+app_dir: "{{ app_root }}/app"
+venv_dir: "{{ app_root }}/venv"
+hf_home: "{{ app_root }}/hf"
+env_dir: /etc/wikivoyage
+
+# ---- Runtime ----
+api_port: 8001             # article_db.api, bound to 127.0.0.1 only
+web_port: 3000             # Next.js, bound to 127.0.0.1 only; nginx is the only public listener
+nodejs_major: 22
+swap_size_mb: 4096
+text_model: Qwen/Qwen3-Embedding-0.6B
+image_model: google/siglip2-so400m-patch16-384
+chat_rate_limit: 10r/m     # per client IP on /api/chat (each request costs OpenAI tokens)
+chat_rate_burst: 5

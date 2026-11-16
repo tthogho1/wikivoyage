@@ -1,0 +1,3 @@
+# Test the configuration first; a broken config fails the play instead of taking the site down.
+- name: reload nginx
+  ansible.builtin.shell: nginx -t && systemctl reload nginx

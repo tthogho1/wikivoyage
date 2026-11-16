@@ -1,0 +1,40 @@
+# Provision the Wikivoyage app host created by ../terraform.
+#   ansible-playbook site.yml -e domain=chat.example.com -e letsencrypt_email=you@example.com
+- name: Wikivoyage app host
+  hosts: app
+  become: true
+
+  pre_tasks:
+    - name: Check required settings
+      ansible.builtin.assert:
+        that:
+          - domain | length > 0
+          - letsencrypt_email | length > 0
+        fail_msg: "Set domain and letsencrypt_email (group_vars/all.yml or -e)."
+        quiet: true
+
+    - name: Read secrets from the local .env
+      ansible.builtin.set_fact:
+        app_env: "{{ app_env | default({}) | combine({item: lookup('ansible.builtin.ini', item, type='properties', file=local_env_file, default='')}) }}"
+      loop: "{{ app_secret_keys + app_optional_keys + ['APP_BASIC_AUTH_USER', 'APP_BASIC_AUTH_PASSWORD'] }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Check that the required secrets are present
+      ansible.builtin.assert:
+        that: app_env[item] | length > 0
+        fail_msg: "{{ item }} must be set in {{ local_env_file }}"
+        quiet: true
+      loop: "{{ app_secret_keys }}"
+
+    - name: Resolve basic auth settings
+      ansible.builtin.set_fact:
+        basic_auth_user: "{{ basic_auth_user or app_env.APP_BASIC_AUTH_USER }}"
+        basic_auth_password: "{{ basic_auth_password or app_env.APP_BASIC_AUTH_PASSWORD }}"
+      no_log: true
+
+  roles:
+    - base
+    - app
+    - nginx

@@ -18,7 +18,7 @@ except ImportError:
 # 設定
 # -----------------------------------------------------------------------
 REPO_ID = "tthogho1/wikivoyage"   # HF Spaces の repo_id
-ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 # Chatbot に不要なローカル専用キーはスキップ
 SKIP_KEYS = {"WIKIVOYAGE_PAGES_DIR", "S3_BUCKET", "AWS_REGION",

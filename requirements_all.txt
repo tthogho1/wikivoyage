@@ -1,23 +1,13 @@
-# pinned dependencies (installed in .venv)
-requests==2.34.2
-
-# optional: nicer wikitext parsing for the preprocessor
-mwparserfromhell>=0.6.6
-
-# embedding + Zilliz Cloud
-pymilvus[model]>=2.4.0
-torch>=2.0
+# Everything for local development. Each stage also has its own smaller set (see README.md).
+# Stage 1 (get_wikivoyage.py)
+-r requirements.txt
+# article_db search CLI + retrieval API; includes image_embedding and torch/transformers
+-r article_db/requirements-search.txt
+# Tests (pytest, milvus-lite, moto, requests-mock)
+-r image_embedding/requirements-dev.txt
+# scripts/embed_chunks.py (Qwen3)
+sentence-transformers>=3
 python-dotenv>=1.0
-
-# Chatbot API
-fastapi>=0.110
-uvicorn[standard]>=0.29
-openai>=1.0
-langchain>=0.0.300
-tiktoken>=0.4
-
- # AWS S3
-boto3>=1.28
-
-# Image pipeline (image_embedding/)
--r image_embedding/requirements-embed.txt
+# databricks/*.py (optional backend)
+databricks-sdk>=0.30
+databricks-vectorsearch>=0.40

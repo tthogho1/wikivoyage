@@ -1,7 +1,7 @@
 """Qwen3-Embedding query encoder for ``chunks[embedding]``.
 
 The chunks were embedded by ``scripts/embed_chunks.py`` with no prompt (documents), so queries get
-Qwen3's retrieval instruction, as in ``scripts/query_index.py``. torch is imported lazily.
+Qwen3's retrieval instruction, as in ``databricks/query_index.py``. torch is imported lazily.
 """
 from __future__ import annotations
 

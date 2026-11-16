@@ -15,7 +15,7 @@ try:
 except ImportError:
     def load_dotenv(*a, **kw): pass  # type: ignore
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 try:
     from pymilvus import MilvusClient

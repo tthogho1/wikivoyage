@@ -1,5 +1,5 @@
 # Image pipeline fetch-side stages on AWS Batch (Fargate): dump, extract, commons, fetch, upsert.
-# Build context is the repo root (it needs wikivoyage_stream/ and embedding/):
+# Build context is the repo root (it needs wikivoyage_stream/ and get_wikivoyage.py):
 #   docker build -f Dockerfile.images -t wikivoyage-images .
 # The embed stage needs torch + a GPU and is not run from this image.
 
@@ -17,7 +17,6 @@ RUN pip install --upgrade pip setuptools wheel \
        -r /app/image_embedding/requirements.txt
 
 COPY wikivoyage_stream /app/wikivoyage_stream
-COPY embedding/__init__.py embedding/upserter.py /app/embedding/
 COPY get_wikivoyage.py /app/get_wikivoyage.py
 COPY image_embedding /app/image_embedding
 

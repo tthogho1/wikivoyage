@@ -74,6 +74,7 @@ logger = logging.getLogger("wikivoyage.embed")
 # Ensure project root is on sys.path so `import embedding.*` works when running
 # this script directly (not as a package).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(1, str(Path(__file__).resolve().parents[2]))  # repo root: image_embedding.upserter
 
 # ---------------------------------------------------------------------------
 # Constants / defaults
@@ -266,7 +267,7 @@ def main() -> None:
     )
 
     # Load .env file (project root or current directory; does not override existing env vars)
-    _env_path = Path(__file__).resolve().parent.parent / ".env"
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
     load_dotenv(_env_path)
     logger.info(".env loaded from %s", _env_path)
 

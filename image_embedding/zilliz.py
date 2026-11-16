@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from embedding.upserter import Upserter
+from .upserter import Upserter
 
 logger = logging.getLogger("wikivoyage.images.zilliz")
 

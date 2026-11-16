@@ -6,9 +6,9 @@ against the precomputed-vector index.
 
 Needs in .env: DATABRICKS_HOST, DATABRICKS_TOKEN.
 
-  python scripts/query_index.py "cheap hostel near the city centre in Aachen"
-  python scripts/query_index.py "best beaches" --page-type city -n 10 --full
-  python scripts/query_index.py --status
+  python databricks/query_index.py "cheap hostel near the city centre in Aachen"
+  python databricks/query_index.py "best beaches" --page-type city -n 10 --full
+  python databricks/query_index.py --status
 """
 from __future__ import annotations
 

@@ -1,0 +1,11 @@
+- name: restart api
+  ansible.builtin.systemd_service:
+    name: wikivoyage-api
+    state: restarted
+    daemon_reload: true
+
+- name: restart web
+  ansible.builtin.systemd_service:
+    name: wikivoyage-web
+    state: restarted
+    daemon_reload: true

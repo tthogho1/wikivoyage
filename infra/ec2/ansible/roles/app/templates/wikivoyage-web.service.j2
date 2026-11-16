@@ -1,0 +1,23 @@
+# Managed by Ansible. Next.js chat UI; calls the API on 127.0.0.1 and OpenAI.
+[Unit]
+Description=Wikivoyage chat web app (Next.js)
+After=network-online.target wikivoyage-api.service
+Wants=network-online.target
+
+[Service]
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_dir }}/webapp
+EnvironmentFile={{ env_dir }}/app.env
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+ExecStart={{ app_dir }}/webapp/node_modules/.bin/next start -p {{ web_port }} -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# Managed by Ansible. Temporary: only until the certificate exists.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ domain }};
+
+    location /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
+    location / { return 503; }
+}

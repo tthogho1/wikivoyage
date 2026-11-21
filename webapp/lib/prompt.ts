@@ -9,6 +9,15 @@ Be concise and specific; name the destination. Answer in the user's language.`;
 
 const MAX_PASSAGE_CHARS = 1800;
 
+/** How many past turns to keep, both for the follow-up rewrite prompt and for the answer's chat memory. */
+export const RECENT_TURNS = 6;
+
+// Matches either a leading connective ("And...", "What about...") or a pronoun/deictic word that can
+// only be resolved from the previous turn ("there", "it", "same place", ...). Used to decide whether a
+// question needs to be rewritten into a standalone search query before embedding (see looksLikeFollowUp).
+const FOLLOW_UP_RE =
+  /(^\s*(and|also|what about|how about)\b)|\b(there|that|those|it|they|them|this|these|same|another|again|nearby|around here|in that area)\b/i;
+
 /** Drop the "Title (type, region) — Section" header line embed_chunks.py puts on every chunk. */
 export function chunkBody(text: string): string {
   const i = text.indexOf("\n");
@@ -42,7 +51,7 @@ export function buildContext(search: SearchResult): { context: string; citations
 /** Prompt that turns a follow-up ("hotels there?") into a standalone search query. */
 export function condenseMessages(history: ChatTurn[], question: string): { role: "system" | "user"; content: string }[] {
   const convo = history
-    .slice(-6)
+    .slice(-RECENT_TURNS)
     .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.content.slice(0, 600)}`)
     .join("\n");
   return [
@@ -54,6 +63,13 @@ export function condenseMessages(history: ChatTurn[], question: string): { role:
     },
     { role: "user", content: `Conversation:\n${convo}\n\nLast message: ${question}` },
   ];
+}
+
+/** Heuristic: rewrite only likely follow-up turns; keep standalone questions untouched. */
+export function looksLikeFollowUp(question: string): boolean {
+  const q = question.trim();
+  if (!q) return false;
+  return FOLLOW_UP_RE.test(q);
 }
 
 export function userPrompt(context: string, question: string | null, hasImage: boolean): string {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildContext, chunkBody, condenseMessages, userPrompt } from "./prompt";
+import { buildContext, chunkBody, condenseMessages, looksLikeFollowUp, userPrompt } from "./prompt";
 import type { SearchResult } from "./types";
 
 const search: SearchResult = {
@@ -66,5 +66,12 @@ describe("prompts", () => {
   it("userPrompt asks about the photo when there is no question", () => {
     expect(userPrompt("ctx", null, true)).toContain("What place is in this photo?");
     expect(userPrompt("", "q", false)).toContain("(no passages found)");
+  });
+
+  it("detects likely follow-up turns", () => {
+    expect(looksLikeFollowUp("What about food there?")).toBe(true);
+    expect(looksLikeFollowUp("Any cheap hostels nearby?")).toBe(true);
+    expect(looksLikeFollowUp("What can I eat in Kyoto?")).toBe(false);
+    expect(looksLikeFollowUp("Best beaches in Okinawa")).toBe(false);
   });
 });

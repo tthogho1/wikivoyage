@@ -3,7 +3,8 @@
   assemble  chunks_embedded (Qwen3) + stage-1 pages + image pipeline outputs (SigLIP2)
             → articles_work/snapshots/<id>/part-*.parquet (one row per article)
   upsert    snapshot → Zilliz `wikivoyage_articles` (only articles whose content changed)
-  all       assemble, then upsert the new snapshot
+  bm25      snapshot chunk texts → Zilliz `wikivoyage_chunks_bm25` (keyword half of the text search)
+  all       assemble, upsert, then bm25
   replay    resend failed upsert batches
   status    snapshot / sent / pending counts and collection rows
   search    --text and/or --image/--image-url → top articles with matching chunks and images
@@ -71,7 +72,11 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("assemble", parents=[common, asm], help="build a snapshot")
     s = sub.add_parser("upsert", parents=[common, up], help="send a snapshot to Zilliz")
     s.add_argument("--snapshot", help="snapshot id (default: newest complete)")
-    sub.add_parser("all", parents=[common, asm, up], help="assemble + upsert")
+    s = sub.add_parser("bm25", parents=[common, up], help="mirror chunk texts into the BM25 collection")
+    s.add_argument("--snapshot", help="snapshot id (default: newest complete)")
+    s.add_argument("--bm25-collection", help="env ZILLIZ_BM25_COLLECTION, default wikivoyage_chunks_bm25")
+    s = sub.add_parser("all", parents=[common, asm, up], help="assemble + upsert + bm25")
+    s.add_argument("--no-bm25", action="store_true", help="skip the BM25 collection")
     s = sub.add_parser("replay", parents=[common], help="resend failed batches")
     s.add_argument("--snapshot")
     s.add_argument("--file", help="one failed batch (path relative to the work dir)")
@@ -89,6 +94,7 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--is-part-of")
     s.add_argument("--title")
     s.add_argument("--heading", help="top-level section of the chunk, e.g. Sleep (text search only)")
+    s.add_argument("--no-bm25", action="store_true", help="dense-only text search (compare with hybrid)")
     s.add_argument("--json", action="store_true")
     return p
 
@@ -115,7 +121,8 @@ def _search(cfg: ArticlesConfig, a: argparse.Namespace) -> int:
     except ValueError as e:
         raise StageError(str(e), 1) from e
     res = searcher.search(a.text, img, top_k=a.top_k, mode=a.mode,
-                          filters=SearchFilters(a.page_type, a.is_part_of, a.title, a.heading))
+                          filters=SearchFilters(a.page_type, a.is_part_of, a.title, a.heading),
+                          keyword=not a.no_bm25)
     if a.json:
         print(json.dumps(res.to_dict(), ensure_ascii=False, indent=2))
         return 0
@@ -124,7 +131,7 @@ def _search(cfg: ArticlesConfig, a: argparse.Namespace) -> int:
         print(f"\n{i}. [{art.score:.4f}] {art.title} ({art.page_type}, {art.is_part_of})  {art.url}")
         for c in art.chunks:
             body = c.text.split("\n", 1)[-1].replace("\n", " ")
-            print(f"   - {c.section_path or '(intro)'} [{c.score:.3f}] {body[:200]}{'…' if len(body) > 200 else ''}")
+            print(f"   - {c.section_path or '(intro)'} [cos {c.score:.3f} bm25 {c.bm25:.2f}] {body[:200]}{'…' if len(body) > 200 else ''}")
         for m in art.images:
             print(f"   * [{m.score:.3f}] {m.caption or m.file_title}  {m.image_url}  ({m.license}, {m.artist[:40]})")
     return 0
@@ -134,7 +141,8 @@ def _apply(cfg: ArticlesConfig, a: argparse.Namespace) -> None:
     for arg, attr in {"workdir": "workdir", "collection": "collection", "chunks_source": "chunks_source",
                       "pages_source": "pages_source", "images_workdir": "images_workdir",
                       "image_dump_date": "image_dump_date", "image_model_slug": "image_model_slug",
-                      "batch_size": "batch_size", "max_batch_bytes": "max_batch_bytes"}.items():
+                      "batch_size": "batch_size", "max_batch_bytes": "max_batch_bytes",
+                      "bm25_collection": "bm25_collection"}.items():
         v = getattr(a, arg, None)
         if v is not None:
             setattr(cfg, attr, v)
@@ -169,7 +177,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     from image_embedding.ids import new_run_id
     from image_embedding.storage import open_store
 
-    from . import assemble, upsert
+    from . import assemble, bm25, upsert
 
     store = open_store(cfg.workdir)
     run_id = new_run_id()
@@ -198,6 +206,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if stats["failed_batches"]:
                 logger.error("%d batches failed; run 'python -m article_db replay'", stats["failed_batches"])
                 return 4
+            snapshot = stats["snapshot_id"]
+        if a.cmd == "bm25" or (a.cmd == "all" and not a.no_bm25):
+            started = time.time()
+            stats = bm25.run(cfg, store, run_id=run_id, snapshot=snapshot, collection=cfg.bm25_collection,
+                             force=a.force, prune=a.prune, dry_run=a.dry_run, limit=a.limit)
+            _summary(store, "bm25", run_id, started, stats)
         return 0
     except StageError as e:
         logger.error("%s", e)

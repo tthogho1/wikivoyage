@@ -2,7 +2,8 @@
 
 export interface ChunkMatch {
   offset: number;
-  score: number;
+  score: number; // Qwen3 cosine (0 when only BM25 matched)
+  bm25?: number; // BM25 score (0 when only the dense search matched)
   chunk_index: number;
   section_path: string;
   url: string;

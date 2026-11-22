@@ -7,11 +7,13 @@ The answer is generated here with OpenAI.
 
 | Query | Text chunks (`chunks[embedding]`) | Images (`images[embedding]`) |
 |---|---|---|
-| text | Qwen3 (query instruction) | SigLIP2 text encoder |
+| text | Qwen3 (query instruction) + BM25 | SigLIP2 text encoder |
 | photo | first chunks of the matched articles | SigLIP2 image encoder |
-| text + photo | Qwen3 on the text | SigLIP2 image encoder |
+| text + photo | Qwen3 + BM25 on the text | SigLIP2 image encoder |
 
-The two lists are merged per article with weighted RRF (`ARTICLES_W_TEXT`=1.0, `ARTICLES_W_IMAGE`=0.5).
+The lists are merged per article with weighted RRF (`ARTICLES_W_TEXT`=1.0, `ARTICLES_W_BM25`=1.0,
+`ARTICLES_W_IMAGE`=0.5). BM25 runs on the `wikivoyage_chunks_bm25` collection; without it the text search
+is dense only.
 For follow-up turns, `gpt-4o-mini` first rewrites the question into a standalone query.
 The photo is also sent to `gpt-4o-mini` with the context.
 

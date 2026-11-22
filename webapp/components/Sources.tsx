@@ -1,20 +1,29 @@
-import type { ArticleHit, Citation, SearchResult } from "@/lib/types";
+import type { ArticleHit, Citation, GalleryImage, SearchResult } from "@/lib/types";
+
+/** The API's gallery (best image hits, any article); older APIs: the images of the top articles. */
+function galleryOf(search: SearchResult): GalleryImage[] {
+  if (search.images) return search.images;
+  return search.articles.flatMap((a) => a.images.map((m) => ({ ...m, page_id: a.page_id, title: a.title, url: a.url })));
+}
 
 export function Sources({ search, citations }: { search: SearchResult; citations: Citation[] }) {
-  const images = search.articles.flatMap((a) => a.images.map((m) => ({ ...m, article: a })));
+  const images = galleryOf(search);
   return (
     <div className="sources">
       {images.length > 0 && (
         <div className="gallery">
           {images.slice(0, 8).map((m) => (
-            <figure key={`${m.article.page_id}-${m.offset}`}>
+            <figure key={`${m.page_id}-${m.offset}`}>
               <a href={m.image_page_url || m.image_url} target="_blank" rel="noreferrer">
                 <img src={m.image_url} alt={m.caption || m.file_title} loading="lazy" />
               </a>
               <figcaption>
-                <span className="fig-title">{m.caption || m.article.title}</span>
+                <span className="fig-title">{m.caption || m.title}</span>
                 <span className="attrib">
-                  {m.article.title} · {m.artist ? `${stripHtml(m.artist)}, ` : ""}
+                  <a href={m.url} target="_blank" rel="noreferrer">
+                    {m.title}
+                  </a>{" "}
+                  · {m.artist ? `${stripHtml(m.artist)}, ` : ""}
                   {m.license_url ? (
                     <a href={m.license_url} target="_blank" rel="noreferrer">
                       {m.license}
@@ -31,6 +40,7 @@ export function Sources({ search, citations }: { search: SearchResult; citations
       <details>
         <summary>
           {search.articles.length} articles · {citations.length} passages · encoders: {search.query.encoders.join(" + ")}
+          {search.query.ranking === "photo" ? " · ranked by photo" : ""}
         </summary>
         <ol className="citations">
           {citations.map((c) => (

@@ -23,6 +23,13 @@ export interface ImageMatch {
   file_title: string;
 }
 
+/** Gallery entry: an image hit with its article (the article need not be in `articles`). */
+export interface GalleryImage extends ImageMatch {
+  page_id: number;
+  title: string;
+  url: string;
+}
+
 export interface ArticleHit {
   page_id: number;
   score: number;
@@ -36,8 +43,10 @@ export interface ArticleHit {
 }
 
 export interface SearchResult {
-  query: { mode: string; encoders: string[] };
+  query: { mode: string; encoders: string[]; ranking?: "fused" | "photo" };
   articles: ArticleHit[];
+  /** Best image matches straight from the image search, independent of the article ranking. */
+  images?: GalleryImage[];
 }
 
 /** One numbered passage given to the LLM; the answer cites it as [n]. */

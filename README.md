@@ -117,6 +117,15 @@ An article's passages are picked by the same RRF over its dense and BM25 hits. `
 `keyword=false` (API) or `ARTICLES_BM25=false` turns the keyword half off. BM25 hits from an article whose
 `content_hash` no longer matches `wikivoyage_articles` are ignored, so re-run `bm25` after each `upsert`.
 
+- **Text + photo is ranked by the photo** (`ARTICLES_PHOTO_FIRST`=true). The photo says where and the text
+  says what: the SigLIP2 photo search picks the articles, then Qwen3 + BM25 run only inside them
+  (`page_id in [...]`) to pick the passages. With RRF over everything, a vague question such as "where to
+  stay?" would outrank the photo, because an image-only article can score at most 0.5/61 against 2/61 for
+  dense + BM25.
+- **Image gallery:** `images` in the result holds the best image hits from any article (`ARTICLES_GALLERY_SIZE`=8,
+  at most 2 per article), so good photo matches are shown even when their article isn't in the top `top_k`.
+- An article with no matched passage (found by its images only) gets its first chunks as context.
+
 ## Databricks (alternative backend)
 
 The stage-2 Parquet can also be loaded into a Delta table and indexed by Databricks Vector Search.

@@ -100,8 +100,29 @@ def test_image_only_uses_siglip_image_and_intro_chunks():
 def test_text_and_image_uses_qwen_and_siglip_image():
     s, client, text, sig = make()
     res = s.search("where to stay", img())
-    assert res.mode == "text+image" and res.encoders == ["qwen3", "siglip2-image"]
+    assert res.mode == "text+image" and res.encoders == ["siglip2-image", "qwen3"] and res.ranking == "photo"
     assert not sig.text_calls and len(sig.image_calls) == 1 and text.calls == [["where to stay"]]
+
+
+def test_text_and_photo_ranks_by_photo_and_searches_text_inside():
+    s, client, *_ = make()
+    res = s.search("where to stay", img(), top_k=2)
+    # Photo list: Cologne (3) then Aachen (1); text alone would have put Aachen and Bonn first.
+    assert [a.page_id for a in res.articles] == [3, 1]
+    image_search, text_search = client.searches
+    assert image_search["anns_field"] == "images[embedding]" and image_search["filter"] == ""
+    assert text_search["anns_field"] == "chunks[embedding]" and text_search["filter"] == "page_id in [3, 1]"
+    aachen = res.articles[1]
+    assert [c.offset for c in aachen.chunks] == [3, 1]       # passages picked by the text
+    assert [c.chunk_index for c in res.articles[0].chunks] == []  # Cologne has no chunks at all
+
+
+def test_photo_first_can_be_turned_off():
+    client = FakeClient(HITS)
+    s = ArticleSearcher(client, "coll", text_embedder=FakeText(), image_embedder=FakeSiglip(), photo_first=False)
+    res = s.search("where to stay", img())
+    assert res.ranking == "fused" and res.encoders == ["qwen3", "siglip2-image"]
+    assert res.articles[0].page_id == 1
 
 
 def test_mode_text_skips_images():
@@ -147,14 +168,16 @@ def test_top_k_and_out_of_range_offsets():
     s, client, *_ = make(hits)
     res = s.search("x", top_k=2, mode="text")
     assert [a.page_id for a in res.articles] == [1, 2]
-    assert res.articles[0].chunks == []  # offset beyond the stored array is dropped, not an IndexError
+    # Offset beyond the stored array is dropped (no IndexError); with no match left, the intro is used.
+    assert [c.chunk_index for c in res.articles[0].chunks] == [0, 1, 2]
     assert "[1, 2]" in client.queries[0]["filter"]
 
 
 def test_to_dict_shape():
     s, *_ = make()
     d = s.search("x").to_dict()
-    assert set(d) == {"query", "articles"} and d["query"]["encoders"] == ["qwen3", "siglip2-text"]
+    assert set(d) == {"query", "articles", "images"} and d["query"]["encoders"] == ["qwen3", "siglip2-text"]
+    assert d["query"]["ranking"] == "fused" and {"page_id", "title", "url", "image_url"} <= set(d["images"][0])
     assert {"page_id", "title", "url", "score", "chunks", "images"} <= set(d["articles"][0])
 
 
@@ -176,3 +199,22 @@ def test_filter_expr_empty_and_combined():
 def test_element_limit_bounds():
     assert element_limit(1, 1) == 50 and element_limit(5, 3) == 50 and element_limit(20, 3) == 180
     assert element_limit(1000, 3) == 1000
+
+
+# ---------------------------------------------------------------- gallery
+def test_gallery_shows_image_hits_outside_the_top_articles():
+    hits = {"chunks[embedding]": [(1, 0, .9), (2, 0, .8)],
+            "images[embedding]": [(3, 0, .30), (1, 2, .20), (1, 1, .19), (1, 0, .18)]}
+    s, client, *_ = make(hits)
+    res = s.search("x", top_k=1)
+    assert [a.page_id for a in res.articles] == [1]
+    # Cologne is not in the top 1 but its image is the best match; at most 2 images per article.
+    assert [(m.page_id, m.offset, m.title) for m in res.images] == [(3, 0, "Cologne"), (1, 2, "Aachen"), (1, 1, "Aachen")]
+    assert "page_id in [3]" in client.queries[1]["filter"]  # only the missing article is fetched again
+
+
+def test_gallery_size_and_empty_without_image_search():
+    s, *_ = make()
+    assert s.search("x", mode="text").images == []
+    s.gallery_size = 1
+    assert len(s.search("x").images) == 1

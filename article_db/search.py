@@ -10,6 +10,14 @@ Text search is hybrid: dense (Qwen3) for meaning, BM25 for exact words (place, s
 names). BM25 hits carry the same (page_id, offset) as dense chunk hits (see ``bm25.py``). The scores
 are not comparable, so the lists are merged per article with weighted RRF, and an article's matched
 chunks are picked by element-level RRF of the dense and BM25 lists.
+
+Text + photo is ranked differently ("photo-first"): the photo says *where*, the text says *what*.
+Merging both by RRF lets a vague question ("where to stay?") outrank the photo, so the photo alone
+picks the articles and the text search then runs only inside them to pick the passages.
+
+Independently of the article ranking, ``SearchResult.images`` is a gallery of the best image hits
+(at most ``gallery_per_article`` per article), so good photo matches are shown even when their
+article does not make the top_k.
 Element-level search returns (page_id, offset); matched chunk/image contents are fetched in
 a second ``query`` for the top articles only (spike option A: ``chunks[text]`` in a search
 returns the whole array of every hit).
@@ -105,14 +113,25 @@ class ArticleHit:
 
 
 @dataclass
+class GalleryImage(ImageMatch):
+    """An image hit with the article it belongs to (gallery entries need not be in ``articles``)."""
+    page_id: int = -1
+    title: str = ""
+    url: str = ""
+
+
+@dataclass
 class SearchResult:
     mode: str
     encoders: list[str]
     articles: list[ArticleHit]
+    images: list[GalleryImage] = field(default_factory=list)
+    ranking: str = "fused"  # fused (RRF over every list) | photo (text + photo: the photo picks the articles)
 
     def to_dict(self) -> dict:
-        return {"query": {"mode": self.mode, "encoders": self.encoders},
-                "articles": [asdict(a) for a in self.articles]}
+        return {"query": {"mode": self.mode, "encoders": self.encoders, "ranking": self.ranking},
+                "articles": [asdict(a) for a in self.articles],
+                "images": [asdict(m) for m in self.images]}
 
 
 @dataclass
@@ -148,7 +167,8 @@ class ArticleSearcher:
                  text_embedder: Any = None, image_embedder: Any = None,
                  bm25_collection: Optional[str] = None,
                  rrf_k: int = 60, w_text: float = 1.0, w_image: float = 0.5, w_bm25: float = 1.0,
-                 per_article: int = 3, intro_chunks: int = 3, ef: int = 128) -> None:
+                 per_article: int = 3, intro_chunks: int = 3, ef: int = 128,
+                 gallery_size: int = 8, gallery_per_article: int = 2, photo_first: bool = True) -> None:
         self.client = client
         self.collection = collection
         self.text_embedder = text_embedder    # QwenQueryEmbedder: embed_queries(list[str])
@@ -159,6 +179,9 @@ class ArticleSearcher:
         self.per_article = per_article
         self.intro_chunks = intro_chunks
         self.ef = ef
+        self.gallery_size = gallery_size
+        self.gallery_per_article = gallery_per_article
+        self.photo_first = photo_first
 
     # ------------------------------------------------------------------ public
     def search(self, text: Optional[str] = None, image: Any = None, *, top_k: int = 5,
@@ -173,33 +196,58 @@ class ArticleSearcher:
         lim = element_limit(top_k, self.per_article)
         lists: dict[str, list[_Elem]] = {}
         encoders: list[str] = []
+        want_text = text is not None and mode in ("both", "text")
+        want_image = mode in ("both", "image")
+        photo_first = self.photo_first and want_text and want_image and image is not None
 
-        if text is not None and mode in ("both", "text"):
-            qvec = self._need(self.text_embedder, "text").embed_queries([text])[0]
-            lists["text"] = self._elem_search(qvec, TEXT_FIELD, filters.chunk_expr(), lim)
-            encoders.append("qwen3")
-            if keyword and self.bm25_collection:
-                lists["bm25"] = self._bm25_search(text, filters.bm25_expr(), lim)
-                encoders.append("bm25")
-        if mode in ("both", "image"):
-            if image is not None:
-                from image_embedding.preprocess import to_rgb
+        if photo_first:
+            # 1. The photo picks the articles ...
+            lists["image"] = self._photo_search(image, filters, lim)
+            encoders.append("siglip2-image")
+            ranked = rrf_merge({"image": lists["image"]}, {"image": 1.0}, self.rrf_k)[:top_k]
+            # 2. ... and the text picks the passages inside them.
+            if ranked:
+                inside = f"page_id in {[pid for pid, _ in ranked]}"
+                encoders += self._text_lists(lists, text, filters, lim, keyword, restrict=inside)
+        else:
+            if want_text:
+                encoders += self._text_lists(lists, text, filters, lim, keyword)
+            if want_image:
+                if image is not None:
+                    lists["image"] = self._photo_search(image, filters, lim)
+                    encoders.append("siglip2-image")
+                elif text is not None:
+                    tvec = self._need(self.image_embedder, "image").embed_texts([text])[0]
+                    lists["image"] = self._elem_search(tvec, IMAGE_FIELD, filters.article_expr(), lim)
+                    encoders.append("siglip2-text")
+            if not lists:
+                raise ValueError(f"mode={mode!r} needs {'text' if mode == 'text' else 'an image or text'}")
+            ranked = rrf_merge(lists, self.weights, self.rrf_k)[:top_k]
 
-                rgb, _ = to_rgb(image)
-                ivec = self._need(self.image_embedder, "image").embed_images([rgb])[0]
-                lists["image"] = self._elem_search(ivec, IMAGE_FIELD, filters.article_expr(), lim)
-                encoders.append("siglip2-image")
-            elif text is not None:
-                tvec = self._need(self.image_embedder, "image").embed_texts([text])[0]
-                lists["image"] = self._elem_search(tvec, IMAGE_FIELD, filters.article_expr(), lim)
-                encoders.append("siglip2-text")
-        if not lists:
-            raise ValueError(f"mode={mode!r} needs {'text' if mode == 'text' else 'an image or text'}")
-
-        ranked = rrf_merge(lists, self.weights, self.rrf_k)[:top_k]
-        articles = self._hydrate(ranked, lists, intro=not any(n in lists for n in CHUNK_LISTS))
+        rows: dict[int, dict] = {}
+        articles = self._hydrate(ranked, lists, rows)
+        gallery = self._gallery(lists.get("image", []), rows)
         query_mode = "+".join(n for n, v in (("text", text), ("image", image)) if v is not None)
-        return SearchResult(mode=query_mode, encoders=encoders, articles=articles)
+        return SearchResult(mode=query_mode, encoders=encoders, articles=articles, images=gallery,
+                            ranking="photo" if photo_first else "fused")
+
+    def _text_lists(self, lists: dict[str, list[_Elem]], text: str, filters: SearchFilters, lim: int,
+                    keyword: bool, restrict: str = "") -> list[str]:
+        """Dense (+ BM25) chunk search into ``lists``; returns the encoder names used."""
+        qvec = self._need(self.text_embedder, "text").embed_queries([text])[0]
+        lists["text"] = self._elem_search(qvec, TEXT_FIELD, _and(filters.chunk_expr(), restrict), lim)
+        used = ["qwen3"]
+        if keyword and self.bm25_collection:
+            lists["bm25"] = self._bm25_search(text, _and(filters.bm25_expr(), restrict), lim)
+            used.append("bm25")
+        return used
+
+    def _photo_search(self, image: Any, filters: SearchFilters, lim: int) -> list[_Elem]:
+        from image_embedding.preprocess import to_rgb
+
+        rgb, _ = to_rgb(image)
+        ivec = self._need(self.image_embedder, "image").embed_images([rgb])[0]
+        return self._elem_search(ivec, IMAGE_FIELD, filters.article_expr(), lim)
 
     # ------------------------------------------------------------------ internals
     @staticmethod
@@ -268,22 +316,22 @@ class ArticleSearcher:
         return [(o, raw[o].get("text", 0.0), raw[o].get("bm25", 0.0)) for o in best]
 
     def _hydrate(self, ranked: list[tuple[int, float]], lists: dict[str, list[_Elem]],
-                 *, intro: bool) -> list[ArticleHit]:
+                 rows_out: dict[int, dict]) -> list[ArticleHit]:
+        """Fetch the ranked articles; rows are also put in ``rows_out`` for the gallery."""
         if not ranked:
             return []
         ids = [pid for pid, _ in ranked]
-        want_chunks = any(n in lists for n in CHUNK_LISTS) or intro
         want_images = "image" in lists
         fields = list(ARTICLE_FIELDS)
         if "bm25" in lists:
             fields.append("content_hash")
-        if want_chunks:
-            fields += [f"chunks[{f}]" for f in CHUNK_FIELDS]
+        fields += [f"chunks[{f}]" for f in CHUNK_FIELDS]  # matched chunks, or the intro as a fallback
         if want_images:
             fields += [f"images[{f}]" for f in IMAGE_FIELDS]
         rows = self.client.query(collection_name=self.collection, filter=f"page_id in {ids}",
                                  output_fields=fields)
         by_id = {int(r["page_id"]): r for r in rows}
+        rows_out.update(by_id)
         if "bm25" in lists:
             # The BM25 mirror may lag behind wikivoyage_articles: offsets of another version are meaningless.
             stale = {e.page_id for e in lists["bm25"]
@@ -315,12 +363,41 @@ class ArticleSearcher:
             if any(n in lists for n in CHUNK_LISTS):
                 hit.chunks = [self._chunk(chunks, off, dense, bm25) for off, dense, bm25 in self._best_chunks(lists, pid)
                               if off < len(chunks)]
-            elif intro:
+            if not hit.chunks:
+                # Found by its images only (photo query, or no passage matched): give the intro as context.
                 hit.chunks = [self._chunk(chunks, i, 0.0) for i in range(min(self.intro_chunks, len(chunks)))]
             hit.images = [self._image(images, e.offset, e.score) for e in best("image", pid)
                           if e.offset < len(images)]
             hits.append(hit)
         return hits
+
+    def _gallery(self, elems: list[_Elem], rows: dict[int, dict]) -> list[GalleryImage]:
+        """Best image hits in score order, at most ``gallery_per_article`` per article."""
+        picked: list[_Elem] = []
+        per: dict[int, int] = {}
+        seen: set[tuple[int, int]] = set()
+        for e in elems:
+            if len(picked) >= self.gallery_size:
+                break
+            if (e.page_id, e.offset) in seen or per.get(e.page_id, 0) >= self.gallery_per_article:
+                continue
+            seen.add((e.page_id, e.offset))
+            per[e.page_id] = per.get(e.page_id, 0) + 1
+            picked.append(e)
+        missing = sorted({e.page_id for e in picked if "images" not in rows.get(e.page_id, {})})
+        if missing:
+            fetched = self.client.query(collection_name=self.collection, filter=f"page_id in {missing}",
+                                        output_fields=["page_id", "title", "url"] + [f"images[{f}]" for f in IMAGE_FIELDS])
+            rows = {**rows, **{int(r["page_id"]): r for r in fetched}}
+        out: list[GalleryImage] = []
+        for e in picked:
+            row = rows.get(e.page_id)
+            images = (row or {}).get("images") or []
+            if e.offset >= len(images):
+                continue
+            m = self._image(images, e.offset, e.score)
+            out.append(GalleryImage(**asdict(m), page_id=e.page_id, title=row.get("title") or "", url=row.get("url") or ""))
+        return out
 
     @staticmethod
     def _chunk(chunks: list[dict], offset: int, score: float, bm25: float = 0.0) -> ChunkMatch:
@@ -332,6 +409,10 @@ class ArticleSearcher:
     def _image(images: list[dict], offset: int, score: float) -> ImageMatch:
         m = images[offset]
         return ImageMatch(offset=offset, score=round(score, 4), **{f: m.get(f) or "" for f in IMAGE_FIELDS})
+
+
+def _and(*exprs: str) -> str:
+    return " && ".join(e for e in exprs if e)
 
 
 def build_searcher(cfg: Any, *, text: bool = True, image: bool = True, client: Any = None) -> ArticleSearcher:
@@ -368,4 +449,6 @@ def build_searcher(cfg: Any, *, text: bool = True, image: bool = True, client: A
     return ArticleSearcher(client, cfg.collection, text_embedder=text_emb, image_embedder=image_emb,
                            bm25_collection=bm25,
                            rrf_k=int(env("ARTICLES_RRF_K", "60")), w_text=float(env("ARTICLES_W_TEXT", "1.0")),
-                           w_image=float(env("ARTICLES_W_IMAGE", "0.5")), w_bm25=float(env("ARTICLES_W_BM25", "1.0")))
+                           w_image=float(env("ARTICLES_W_IMAGE", "0.5")), w_bm25=float(env("ARTICLES_W_BM25", "1.0")),
+                           gallery_size=int(env("ARTICLES_GALLERY_SIZE", "8")),
+                           photo_first=env("ARTICLES_PHOTO_FIRST", "true").strip().lower() not in ("0", "false", "no", "off"))

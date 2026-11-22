@@ -126,7 +126,7 @@ def _search(cfg: ArticlesConfig, a: argparse.Namespace) -> int:
     if a.json:
         print(json.dumps(res.to_dict(), ensure_ascii=False, indent=2))
         return 0
-    print(f"mode={res.mode} encoders={','.join(res.encoders)}")
+    print(f"mode={res.mode} ranking={res.ranking} encoders={','.join(res.encoders)}")
     for i, art in enumerate(res.articles, 1):
         print(f"\n{i}. [{art.score:.4f}] {art.title} ({art.page_type}, {art.is_part_of})  {art.url}")
         for c in art.chunks:
@@ -134,6 +134,10 @@ def _search(cfg: ArticlesConfig, a: argparse.Namespace) -> int:
             print(f"   - {c.section_path or '(intro)'} [cos {c.score:.3f} bm25 {c.bm25:.2f}] {body[:200]}{'…' if len(body) > 200 else ''}")
         for m in art.images:
             print(f"   * [{m.score:.3f}] {m.caption or m.file_title}  {m.image_url}  ({m.license}, {m.artist[:40]})")
+    if res.images:
+        print("\nimage gallery (best image matches, any article):")
+        for m in res.images:
+            print(f"  [{m.score:.3f}] {m.title}: {m.caption or m.file_title}  {m.image_url}")
     return 0
 
 

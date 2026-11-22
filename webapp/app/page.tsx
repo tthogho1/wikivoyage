@@ -100,7 +100,6 @@ export default function Page() {
     form.set("mode", mode);
     setImage(null);
     setPreview(null);
-    setMode("both"); // don't let a one-off mode choice silently apply to unrelated future questions
     if (fileRef.current) fileRef.current.value = "";
 
     setBusy(true);
@@ -166,7 +165,8 @@ export default function Page() {
               {m.searchQuery && messages.length > 2 && <p className="muted small">searched: “{m.searchQuery}”</p>}
               {m.text ? <Answer text={m.text} citations={m.citations ?? []} /> : m.pending && <p className="muted">Searching…</p>}
               {m.error && <p className="error">{m.error}</p>}
-              {m.search && <Sources search={m.search} citations={m.citations ?? []} />}
+              {/* Photos and the source list appear once the answer has finished streaming. */}
+              {m.search && !m.pending && <Sources search={m.search} citations={m.citations ?? []} />}
             </div>
           ),
         )}

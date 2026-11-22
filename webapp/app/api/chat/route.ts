@@ -53,7 +53,10 @@ export async function POST(req: Request) {
     return badRequest("history is not JSON");
   }
   const parsed = History.safeParse(rawHistory);
-  if (!parsed.success) return badRequest("invalid history");
+  if (!parsed.success) {
+    console.error("[chat] invalid history", parsed.error.issues);
+    return badRequest(`invalid history: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
   const history = parsed.data;
 
   const openai = new OpenAI({ apiKey: env.openaiKey });
@@ -94,7 +97,7 @@ export async function POST(req: Request) {
           { role: "user", content },
         ];
         const completion = await openai.chat.completions.create(
-          { model: MODEL, messages, temperature: 0.2, max_completion_tokens: 1024, stream: true },
+          { model: MODEL, messages, temperature: 0.3, max_completion_tokens: 1500, stream: true },
           { signal: req.signal },
         );
         for await (const chunk of completion) {

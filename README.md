@@ -15,6 +15,7 @@ Wikivoyage dump (.xml.bz2)
                           ▼
             Zilliz  wikivoyage_articles   1 row = 1 article
               chunks[]  text + Qwen3 (1024)      images[]  Commons URL/licence + SigLIP2 (1152)
+            Zilliz  wikivoyage_chunks_bm25  1 row = 1 chunk, BM25 sparse built by Zilliz (keyword search)
                           ▲
        5. article_db.api (FastAPI :8001, Qwen3 + SigLIP2 loaded)  ◀──  webapp/ (Next.js :3000) ──▶ OpenAI
 ```
@@ -72,8 +73,9 @@ caffeinate -i python scripts/embed_chunks.py
 D=20261101   # a dump date from https://dumps.wikimedia.org/enwikivoyage/
 for s in dump extract commons fetch embed; do python -m image_embedding $s --dump-date $D || break; done
 
-# 4. Join by page_id and upsert to Zilliz (~1 h, mostly upload)
-python -m article_db all --image-dump-date $D
+# 4. Join by page_id and upsert to Zilliz (~1 h, mostly upload), then mirror chunk texts for BM25
+python -m article_db all --image-dump-date $D     # assemble + upsert + bm25
+python -m article_db bm25                         # BM25 collection only (changed articles only)
 python -m article_db status
 ```
 
@@ -102,12 +104,27 @@ Which model embeds the query:
 
 | Query | Text chunks (`chunks[embedding]`) | Images (`images[embedding]`) |
 |---|---|---|
-| text | Qwen3, with its query instruction | SigLIP2 text encoder |
+| text | Qwen3, with its query instruction, **+ BM25** | SigLIP2 text encoder |
 | photo | the first chunks of the matched articles | SigLIP2 image encoder |
-| text + photo | Qwen3 on the text | SigLIP2 image encoder |
+| text + photo | Qwen3 + BM25 on the text | SigLIP2 image encoder |
 
-Results are merged per article with weighted reciprocal rank fusion (RRF): `ARTICLES_W_TEXT`=1.0,
-`ARTICLES_W_IMAGE`=0.5, `ARTICLES_RRF_K`=60.
+Text search is **hybrid**: Qwen3 finds passages by meaning, and BM25 (Zilliz full-text search on
+`wikivoyage_chunks_bm25`, english analyzer) finds exact words such as station, shop and place names.
+StructArray sub-fields can't carry an analyzer, so the chunk texts are mirrored there, one row per chunk,
+keyed by the same `(page_id, offset)` as `chunks[]`. Results are merged per article with weighted reciprocal
+rank fusion (RRF): `ARTICLES_W_TEXT`=1.0, `ARTICLES_W_BM25`=1.0, `ARTICLES_W_IMAGE`=0.5, `ARTICLES_RRF_K`=60.
+An article's passages are picked by the same RRF over its dense and BM25 hits. `--no-bm25` (CLI),
+`keyword=false` (API) or `ARTICLES_BM25=false` turns the keyword half off. BM25 hits from an article whose
+`content_hash` no longer matches `wikivoyage_articles` are ignored, so re-run `bm25` after each `upsert`.
+
+- **Text + photo is ranked by the photo** (`ARTICLES_PHOTO_FIRST`=true). The photo says where and the text
+  says what: the SigLIP2 photo search picks the articles, then Qwen3 + BM25 run only inside them
+  (`page_id in [...]`) to pick the passages. With RRF over everything, a vague question such as "where to
+  stay?" would outrank the photo, because an image-only article can score at most 0.5/61 against 2/61 for
+  dense + BM25.
+- **Image gallery:** `images` in the result holds the best image hits from any article (`ARTICLES_GALLERY_SIZE`=8,
+  at most 2 per article), so good photo matches are shown even when their article isn't in the top `top_k`.
+- An article with no matched passage (found by its images only) gets its first chunks as context.
 
 ## Databricks (alternative backend)
 

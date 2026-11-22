@@ -33,6 +33,7 @@ class ArticlesConfig:
     image_model_slug: Optional[str] = None
     no_images: bool = False
     collection: str = "wikivoyage_articles"
+    bm25_collection: str = "wikivoyage_chunks_bm25"
     wiki: str = "enwikivoyage"
     max_chunks: int = 512
     max_images: int = 64
@@ -53,6 +54,7 @@ class ArticlesConfig:
             images_workdir=_env("IMAGES_WORKDIR", "images_work"),
             image_dump_date=_env("IMAGES_DUMP_DATE") or None,
             collection=_env("ZILLIZ_ARTICLE_COLLECTION", "wikivoyage_articles"),
+            bm25_collection=_env("ZILLIZ_BM25_COLLECTION", "wikivoyage_chunks_bm25"),
             wiki=_env("IMAGES_WIKI", "enwikivoyage"),
             max_chunks=_env_int("ARTICLES_MAX_CHUNKS", 512),
             max_images=_env_int("ARTICLES_MAX_IMAGES", 64),

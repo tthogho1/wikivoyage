@@ -25,15 +25,23 @@ const EXAMPLES = [
   "What can I eat in Kyoto?",
 ];
 
-let nextId = 1;
+const MODE_OPTIONS: { value: "both" | "text" | "image"; icon: string; label: string }[] = [
+  { value: "both", icon: "🔎", label: "Text + Images" },
+  { value: "text", icon: "📝", label: "Text only" },
+  { value: "image", icon: "🖼️", label: "Images only" },
+];
 
 export default function Page() {
+  const nextIdRef = useRef(1);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [mode, setMode] = useState<"both" | "text" | "image">("both");
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const modeMenuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -41,6 +49,21 @@ export default function Page() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(e.target as Node)) setModeMenuOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setModeMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
 
   function attach(file: File | undefined | null) {
     if (!file || !file.type.startsWith("image/")) return;
@@ -65,8 +88,8 @@ export default function Page() {
     const history: ChatTurn[] = messages
       .filter((m) => !m.error && !m.pending && m.text)
       .map((m) => ({ role: m.role, content: m.text }));
-    const userMsg: Message = { id: nextId++, role: "user", text: question, imageUrl: preview ?? undefined };
-    const botMsg: Message = { id: nextId++, role: "assistant", text: "", pending: true };
+    const userMsg: Message = { id: nextIdRef.current++, role: "user", text: question, imageUrl: preview ?? undefined };
+    const botMsg: Message = { id: nextIdRef.current++, role: "assistant", text: "", pending: true };
     setMessages((ms) => [...ms, userMsg, botMsg]);
     setInput("");
 
@@ -74,6 +97,7 @@ export default function Page() {
     if (question) form.set("question", question);
     if (image) form.set("image", image, image.name);
     form.set("history", JSON.stringify(history));
+    form.set("mode", mode);
     setImage(null);
     setPreview(null);
     if (fileRef.current) fileRef.current.value = "";
@@ -141,7 +165,8 @@ export default function Page() {
               {m.searchQuery && messages.length > 2 && <p className="muted small">searched: “{m.searchQuery}”</p>}
               {m.text ? <Answer text={m.text} citations={m.citations ?? []} /> : m.pending && <p className="muted">Searching…</p>}
               {m.error && <p className="error">{m.error}</p>}
-              {m.search && <Sources search={m.search} citations={m.citations ?? []} />}
+              {/* Photos and the source list appear once the answer has finished streaming. */}
+              {m.search && !m.pending && <Sources search={m.search} citations={m.citations ?? []} />}
             </div>
           ),
         )}
@@ -164,6 +189,39 @@ export default function Page() {
           </div>
         )}
         <div className="row">
+          <div className="mode-menu" ref={modeMenuRef}>
+            <button
+              type="button"
+              className="icon"
+              onClick={() => setModeMenuOpen((o) => !o)}
+              aria-haspopup="true"
+              aria-expanded={modeMenuOpen}
+              aria-label="Search mode"
+              title={MODE_OPTIONS.find((o) => o.value === mode)?.label}
+            >
+              {MODE_OPTIONS.find((o) => o.value === mode)?.icon}
+            </button>
+            {modeMenuOpen && (
+              <div className="mode-dropdown" role="menu" aria-label="Search mode">
+                {MODE_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={mode === o.value}
+                    className={mode === o.value ? "active" : ""}
+                    onClick={() => {
+                      setMode(o.value);
+                      setModeMenuOpen(false);
+                    }}
+                  >
+                    <span className="mode-icon">{o.icon}</span>
+                    <span>{o.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button type="button" className="icon" onClick={() => fileRef.current?.click()} aria-label="Attach photo" title="Attach photo">
             📷
           </button>

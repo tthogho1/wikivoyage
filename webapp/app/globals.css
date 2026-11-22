@@ -27,7 +27,7 @@
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body { font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: var(--accent); }
-main { max-width: 860px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding: 0 16px; }
+main { max-width: 1100px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; padding: 0 16px; }
 main.dragging { outline: 2px dashed var(--accent); outline-offset: -8px; }
 header { padding: 20px 0 8px; }
 h1 { font-size: 22px; margin: 0; }
@@ -56,10 +56,24 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .citations, .articles { font-size: 13px; margin: 6px 0; padding-left: 22px; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 16px; }
 .composer .row { display: flex; gap: 8px; align-items: flex-end; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; }
-.composer textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; padding: 8px 4px; min-height: 38px; max-height: 160px; field-sizing: content; }
+.composer textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; padding: 10px 6px; min-height: 44px; max-height: 220px; field-sizing: content; }
 .composer button { border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: var(--accent-text); font: inherit; cursor: pointer; }
 .composer button:disabled { opacity: .45; cursor: default; }
 .composer button.icon { background: transparent; padding: 8px; font-size: 18px; }
+.composer .mode-menu { position: relative; }
+.composer .mode-dropdown {
+  position: absolute; bottom: calc(100% + 6px); left: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 4px; min-width: 160px; box-shadow: 0 6px 18px rgba(0,0,0,.12); z-index: 10;
+}
+.composer .mode-dropdown button {
+  display: flex; align-items: center; gap: 8px; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 6px; text-align: left; width: 100%;
+}
+.composer .mode-dropdown button:hover { background: var(--user); }
+.composer .mode-dropdown button.active { background: var(--accent); color: var(--accent-text); }
+.composer .mode-icon { font-size: 16px; }
 .attached { position: relative; display: inline-block; margin-bottom: 8px; }
 .attached img { height: 84px; border-radius: 8px; display: block; }
 .attached button { position: absolute; top: -8px; right: -8px; width: 24px; height: 24px; border-radius: 50%; border: 0; background: var(--text); color: var(--bg); cursor: pointer; line-height: 1; }

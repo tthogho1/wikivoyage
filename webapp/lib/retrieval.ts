@@ -13,12 +13,14 @@ export async function searchArticles(opts: {
   image: Blob | null;
   imageName?: string;
   topK?: number;
+  mode?: "both" | "text" | "image";
   signal?: AbortSignal;
 }): Promise<SearchResult> {
   const form = new FormData();
   if (opts.text) form.set("text", opts.text);
   if (opts.image) form.set("image", opts.image, opts.imageName ?? "query.jpg");
   form.set("top_k", String(opts.topK ?? 5));
+  form.set("mode", opts.mode ?? "both");
   const RETRIEVAL_URL = env.retrievalUrl;
   let resp: Response;
   try {

@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { env } from "@/lib/env";
 import { encodeEvent } from "@/lib/ndjson";
-import { SYSTEM_PROMPT, buildContext, condenseMessages, userPrompt } from "@/lib/prompt";
+import { SYSTEM_PROMPT, RECENT_TURNS, buildContext, condenseMessages, looksLikeFollowUp, userPrompt } from "@/lib/prompt";
 import { RetrievalError, searchArticles } from "@/lib/retrieval";
 import type { ChatEvent } from "@/lib/types";
 
@@ -17,6 +17,8 @@ const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const History = z
   .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(8000) }))
   .max(20);
+
+const Mode = z.enum(["both", "text", "image"]).catch("both");
 
 function badRequest(message: string, status = 400) {
   return Response.json({ error: message }, { status });
@@ -38,6 +40,7 @@ export async function POST(req: Request) {
   const question = (form.get("question")?.toString() ?? "").trim() || null;
   const rawImage = form.get("image");
   const image = rawImage instanceof File && rawImage.size > 0 ? rawImage : null;
+  const mode = Mode.parse(form.get("mode")?.toString());
   if (!question && !image) return badRequest("send a question, an image, or both");
   if (question && question.length > 2000) return badRequest("question longer than 2000 characters");
   if (image && image.size > MAX_IMAGE_BYTES) return badRequest("image larger than 20 MB", 413);
@@ -50,7 +53,10 @@ export async function POST(req: Request) {
     return badRequest("history is not JSON");
   }
   const parsed = History.safeParse(rawHistory);
-  if (!parsed.success) return badRequest("invalid history");
+  if (!parsed.success) {
+    console.error("[chat] invalid history", parsed.error.issues);
+    return badRequest(`invalid history: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
+  }
   const history = parsed.data;
 
   const openai = new OpenAI({ apiKey: env.openaiKey });
@@ -61,8 +67,10 @@ export async function POST(req: Request) {
       const send = (ev: ChatEvent) => controller.enqueue(encodeEvent(ev));
       try {
         // 1. Follow-ups ("what about food there?") become a standalone query before embedding.
+        //    Chat memory for generation is NOT gated on this: a missed follow-up heuristic should only
+        //    degrade the search query, never wipe the assistant's conversational memory.
         let searchQuery = question;
-        if (question && history.length) {
+        if (question && history.length > 0 && looksLikeFollowUp(question)) {
           const r = await openai.chat.completions.create({
             model: MODEL,
             messages: condenseMessages(history, question),
@@ -73,7 +81,7 @@ export async function POST(req: Request) {
         }
 
         // 2. Retrieval: Qwen3 / SigLIP2 run in the Python API.
-        const search = await searchArticles({ text: searchQuery, image, imageName: image?.name, signal: req.signal });
+        const search = await searchArticles({ text: searchQuery, image, imageName: image?.name, mode, signal: req.signal });
         const { context, citations } = buildContext(search);
         send({ type: "sources", searchQuery, search, citations });
 
@@ -85,11 +93,11 @@ export async function POST(req: Request) {
         }
         const messages: ChatCompletionMessageParam[] = [
           { role: "system", content: SYSTEM_PROMPT },
-          ...history.slice(-6).map((t) => ({ role: t.role, content: t.content }) as ChatCompletionMessageParam),
+          ...history.slice(-RECENT_TURNS).map((t) => ({ role: t.role, content: t.content }) as ChatCompletionMessageParam),
           { role: "user", content },
         ];
         const completion = await openai.chat.completions.create(
-          { model: MODEL, messages, temperature: 0.2, max_completion_tokens: 1024, stream: true },
+          { model: MODEL, messages, temperature: 0.3, max_completion_tokens: 1500, stream: true },
           { signal: req.signal },
         );
         for await (const chunk of completion) {

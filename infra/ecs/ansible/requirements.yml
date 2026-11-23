@@ -1,0 +1,9 @@
+# Requires the AWS CLI, Docker, and (for site.yml's docker_image_build tasks) the
+# community.docker collection:
+#
+#   ansible-galaxy collection install community.docker
+#
+# AWS credentials: anything the AWS CLI picks up normally (env vars, ~/.aws/credentials,
+# SSO, etc.) — the same credentials you use for `terraform apply` in ../terraform.
+collections:
+  - name: community.docker

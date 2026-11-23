@@ -1,0 +1,11 @@
+# Used instead of the repo-root .dockerignore when building article_db/Dockerfile
+# (BuildKit picks up <Dockerfile>.dockerignore). Allow-list: only the three packages the
+# retrieval API imports go into the build context — no .env, data dirs or webapp.
+*
+!article_db/
+!image_embedding/
+!wikivoyage_stream/
+
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and edit. Secrets are better left blank here and set
+# via `aws secretsmanager put-secret-value` (or AWS console) after the first apply,
+# matching how ../ansible pushes secrets without storing them in tfstate.
+
+# region = "ap-northeast-1"
+# name   = "wikivoyage"
+
+# ssh_cidr-equivalent note: the ALB is public by design (alb_ingress_cidrs = ["0.0.0.0/0"]).
+# Narrow alb_ingress_cidrs if you want to restrict access while testing.
+
+# webapp_desired_count = 1
+# api_desired_count    = 1
+
+# Leave blank and set out-of-band, or fill in here (will be stored in tfstate):
+# openai_api_key = ""
+# zilliz_uri     = ""
+# zilliz_token   = ""

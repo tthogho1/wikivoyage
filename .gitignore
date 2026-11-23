@@ -25,3 +25,8 @@ images_work/
 
 # StructArray article DB work dir
 articles_work/
+
+# Terraform local state and provider cache (state may contain secrets)
+*.tfstate
+*.tfstate.*
+.terraform/

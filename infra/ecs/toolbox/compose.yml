@@ -1,0 +1,23 @@
+# Interactive deploy shell with the repo, AWS credentials and the host Docker daemon mounted.
+#   docker compose -f infra/ecs/toolbox/compose.yml run --rm deploy
+services:
+  deploy:
+    build: .
+    image: wikivoyage-deploy
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/infra/ecs
+    environment:
+      - AWS_PROFILE
+      - AWS_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+    volumes:
+      - ../../..:/workspace                      # repo root
+      - ${HOME}/.aws:/root/.aws                  # credentials / SSO cache (read-write for SSO refresh)
+      - /var/run/docker.sock:/var/run/docker.sock
+      - tf-plugin-cache:/root/.terraform.d/plugin-cache   # keep the AWS provider across runs
+
+volumes:
+  tf-plugin-cache:

@@ -1,0 +1,14 @@
+# Used instead of the repo-root .dockerignore when building webapp/Dockerfile
+# (BuildKit picks up <Dockerfile>.dockerignore). The root one excludes webapp/ for the
+# extraction-job image. Allow-list: only the webapp sources go into the build context.
+*
+!webapp/
+
+# Host builds must not overwrite the image's own node_modules / .next (macOS-native binaries).
+webapp/node_modules
+webapp/.next
+webapp/.env*
+!webapp/.env.local.example
+webapp/*.tsbuildinfo
+webapp/next-env.d.ts
+webapp/*.log

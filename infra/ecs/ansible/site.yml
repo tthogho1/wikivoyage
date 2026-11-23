@@ -1,0 +1,80 @@
+# Build & push both Docker images to ECR, then force a new ECS deployment of both services.
+#   ansible-playbook site.yml
+#   ansible-playbook site.yml -e image_tag=v1.2.3
+#   ansible-playbook site.yml -e force_new_deployment=false   # build+push only
+- name: Build, push and deploy the Wikivoyage ECS Fargate services
+  hosts: local
+  gather_facts: false
+
+  tasks:
+    - name: Look up AWS account id
+      ansible.builtin.command: aws sts get-caller-identity --query Account --output text
+      register: account_id
+      changed_when: false
+
+    - name: Set ECR registry host
+      ansible.builtin.set_fact:
+        ecr_registry: "{{ account_id.stdout }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+
+    - name: Log in to ECR
+      ansible.builtin.shell: >
+        aws ecr get-login-password --region {{ aws_region }}
+        | docker login --username AWS --password-stdin {{ ecr_registry }}
+      changed_when: true
+
+    - name: Build webapp image
+      community.docker.docker_image_build:
+        name: "{{ ecr_registry }}/{{ webapp_repo_name }}:{{ image_tag }}"
+        path: "{{ repo_root }}"
+        dockerfile: webapp/Dockerfile
+        pull: true
+        # Default is "never": an existing local tag would be pushed as is. The tag is the git SHA,
+        # which doesn't change with uncommitted edits, so always rebuild (BuildKit cache keeps it fast).
+        rebuild: always
+
+    - name: Build article_db.api image
+      community.docker.docker_image_build:
+        name: "{{ ecr_registry }}/{{ api_repo_name }}:{{ image_tag }}"
+        path: "{{ repo_root }}"
+        dockerfile: article_db/Dockerfile
+        pull: true
+        rebuild: always
+
+    - name: Also tag both images as :latest
+      ansible.builtin.command: >
+        docker tag {{ ecr_registry }}/{{ item }}:{{ image_tag }} {{ ecr_registry }}/{{ item }}:latest
+      loop:
+        - "{{ webapp_repo_name }}"
+        - "{{ api_repo_name }}"
+      changed_when: true
+
+    - name: Push images ({{ image_tag }} and latest)
+      ansible.builtin.command: >
+        docker push {{ ecr_registry }}/{{ item.0 }}:{{ item.1 }}
+      loop: "{{ [webapp_repo_name, api_repo_name] | product([image_tag, 'latest']) | list }}"
+      changed_when: true
+
+    - name: Force a new deployment of both ECS services
+      ansible.builtin.command: >
+        aws ecs update-service
+        --cluster {{ ecs_cluster_name }}
+        --service {{ item }}
+        --force-new-deployment
+        --region {{ aws_region }}
+      loop:
+        - "{{ webapp_service_name }}"
+        - "{{ api_service_name }}"
+      when: force_new_deployment | bool
+      changed_when: true
+
+    - name: Wait for both services to stabilize
+      ansible.builtin.command: >
+        aws ecs wait services-stable
+        --cluster {{ ecs_cluster_name }}
+        --services {{ item }}
+        --region {{ aws_region }}
+      loop:
+        - "{{ webapp_service_name }}"
+        - "{{ api_service_name }}"
+      when: force_new_deployment | bool
+      changed_when: false

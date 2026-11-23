@@ -1,0 +1,18 @@
+aws_region: ap-northeast-1
+name: wikivoyage
+
+# Path to the repo root (so this playbook can be run from infra/ecs/ansible/ regardless of cwd).
+repo_root: "{{ playbook_dir }}/../../.."
+
+image_tag: "{{ lookup('pipe', 'git -C ' + repo_root + ' rev-parse --short HEAD') }}"
+
+webapp_repo_name: "{{ name }}-webapp"
+api_repo_name: "{{ name }}-article-db-api"
+
+ecs_cluster_name: "{{ name }}"
+webapp_service_name: "{{ name }}-webapp"
+api_service_name: "{{ name }}-article-db-api"
+
+# Set to false to only build+push images without rolling the ECS services
+# (e.g. if you'll `terraform apply` separately to pick up a new image_tag var).
+force_new_deployment: true
